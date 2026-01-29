@@ -1,62 +1,41 @@
-from flask import Flask, request
-import os
-import requests
+from flask import Flask, request, make_response
+import os, requests, tempfile
 import google.generativeai as genai
-import tempfile
 
 app = Flask(__name__)
-
-# הגדרת מפתחות מתוך משתני הסביבה של Render
-GOOGLE_API_KEY = os.environ.get("GEMINI_API_KEY")
-genai.configure(api_key=GOOGLE_API_KEY)
-YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
 @app.route('/ask_ai', methods=['GET', 'POST'])
 def ask_ai():
-    # קבלת נתיב הקובץ שהוקלט (אם קיים)
     audio_path = request.values.get('path')
 
-    # שלב א: אם המערכת רק נכנסה ואין עדיין הקלטה
+    # פקודת הקלטה פשוטה ללא תווים מיוחדים
     if not audio_path:
-        # פקודת הקלטה "סטרילית" - בלי פסיקים, בלי גרשיים מיותרים ובלי סימני < >
-        # הטקסט שיושמע: "נא להגיד את השאלה ולאחר מכן להקיש סולמית"
-        return "read=t-נא להגיד את השאלה ולאחר מכן להקיש סולמית&target=path&max=20&beep=yes"
+        return "read=t-נא לדבר לאחר הצפצוף ובסיום סולמית&target=path&max=20&beep=yes"
 
-    # שלב ב: יש הקלטה, שולחים אותה לבינה המלאכותית
     try:
-        # הורדת הקובץ מימות המשיח
-        download_url = f"https://www.call2all.co.il/ym/api/DownloadFile?token={YEMOT_TOKEN}&path={audio_path}"
-        response = requests.get(download_url)
+        # הורדה
+        token = os.environ.get("YEMOT_TOKEN")
+        url = f"https://www.call2all.co.il/ym/api/DownloadFile?token={token}&path={audio_path}"
+        res = requests.get(url)
         
-        if response.status_code != 200:
-            return "id_list_message=t-תקלה בהורדת ההקלטה"
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp.write(res.content)
+            tmp_path = tmp.name
 
-        # שמירת הקובץ זמנית לצורך העלאה לגוגל
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
-            temp_audio.write(response.content)
-            temp_audio_path = temp_audio.name
-
-        # הגדרת המודל והעלאת הקובץ
+        # בינה מלאכותית
         model = genai.GenerativeModel("gemini-1.5-flash")
-        sample_file = genai.upload_file(path=temp_audio_path, mime_type="audio/wav")
+        audio_file = genai.upload_file(path=tmp_path)
+        answer = model.generate_content(["תענה בקצרה בעברית", audio_file])
         
-        # קבלת תשובה מה-AI
-        answer = model.generate_content([
-            "ענה על השאלה שבהקלטה בעברית קצרה ופשוטה. אל תשתמש בסימנים מיוחדים כמו כוכביות או סולמיות.", 
-            sample_file
-        ])
+        # ניקוי מוחלט של התשובה
+        clean_text = "".join(c for c in answer.text if c.isalnum() or c in " .")
         
-        # ניקוי התשובה מסימנים שעלולים לשבש את הקריין של ימות המשיח
-        clean_answer = answer.text.replace("*", "").replace(">", "").replace("\n", " ").replace("\"", "")
-        
-        # השמעת התשובה וניתוק/סיום
-        return f"id_list_message=t-{clean_answer}"
+        # פקודת השמעה
+        return f"id_list_message=t-{clean_text}"
 
     except Exception as e:
-        print(f"Error: {e}")
-        return "id_list_message=t-חלה שגיאה בעיבוד השאלה"
+        return "id_list_message=t-חלה שגיאה בעיבוד"
 
 if __name__ == '__main__':
-    # הרצה על הפורט ש-Render דורש
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=10000)
