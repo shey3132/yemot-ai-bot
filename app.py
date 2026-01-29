@@ -1,36 +1,26 @@
-import requests
-import google.generativeai as genai
 from flask import Flask, request
 import os
-
-# משיכת המפתח מהגדרות השרת ב-Render
-api_key = os.environ.get('GOOGLE_API_KEY')
-genai.configure(api_key=api_key)
 
 app = Flask(__name__)
 
 @app.route('/ask_ai', methods=['GET', 'POST'])
-def handle_call():
-    file_url = request.values.get('path')
-    if not file_url:
-        return "id_list_message=f-שלום, לא הועברה הקלטה מהמערכת."
+def ask_ai():
+    # שליפת הפרמטרים מימות המשיח (מופיעים בלוג כ-ApiSend)
+    audio_path = request.values.get('path')
+    
+    # שלב א: אם אין עדיין הקלטה, נשלח פקודה לימות המשיח להקליט
+    if not audio_path:
+        # הפקודה הזו אומרת לימות המשיח: תשמיעו הודעה, תצפצפו ותקליטו לתוך משתנה שנקרא path
+        return "read=t-נא להגיד את שאלתכם לאחר הצפצוף ובסיום להקיש סולמית&target=path&max=30&beep=yes"
 
+    # שלב ב: אם הגענו לכאן, סימן שיש הקלטה בתוך audio_path
     try:
-        # הורדת קובץ השמע זמנית לשרת
-        audio_response = requests.get(file_url)
-        with open("input.wav", "wb") as f:
-            f.write(audio_response.content)
-
-        # שליחה ל-Gemini
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        audio_file = genai.upload_file(path="input.wav")
+        # כאן יבוא הקוד של ה-AI (התמלול והתשובה של ג'מיני)
+        # כרגע נחזיר תשובה זמנית לבדיקה כדי לראות שההקלטה עברה
+        return f"id_list_message=t-ההקלטה התקבלה בהצלחה. הנתיב שלה הוא {audio_path}"
         
-        # הנחיה לבינה המלאכותית
-        response = model.generate_content([audio_file, "ענה בקצרה מאוד ובעברית על השאלה שנשאלה בשמע."])
-        
-        return f"id_list_message=f-{response.text}"
     except Exception as e:
-        return "id_list_message=f-חלה שגיאה בעיבוד השאלה, נסו שוב."
+        return "id_list_message=t-חלה שגיאה בעיבוד התמלול"
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
