@@ -1,46 +1,35 @@
 from flask import Flask, request
-import os
-import requests
 import google.generativeai as genai
-import tempfile
+import os
 
 app = Flask(__name__)
-
-# הגדרת מפתחות
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
 
 @app.route('/ask_ai', methods=['GET', 'POST'])
 def ask_ai():
-    # בדיקה האם ימות המשיח שלחו נתיב של קובץ שמע
-    audio_path = request.values.get('path')
+    # קבלת הטקסט שזוהה על ידי ימות המשיח
+    user_text = request.values.get('text_question')
 
-    # אם אין נתיב (כלומר המשתמש הרגע נכנס לשלוחה) - אנחנו מבקשים ממנו להקליט
-    if not audio_path:
-        # זו השורה ששאלת עליה - היא חייבת להיות כאן בתוך ה-if
-        return "read=t-נא לדבר אחרי הצפצוף ובסיום סולמית&target=path&max=20&beep=yes"
+    # אם ימות המשיח לא הצליחו לזהות דיבור (שקט)
+    if not user_text or user_text.strip() == "":
+        return "id_list_message=t-לא שמעתי שאלה, נא לנסות שנית"
 
-    # אם יש נתיב - ממשיכים לעיבוד עם ה-AI
     try:
-        download_url = f"https://www.call2all.co.il/ym/api/DownloadFile?token={YEMOT_TOKEN}&path={audio_path}"
-        response = requests.get(download_url)
-        
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
-            temp_audio.write(response.content)
-            temp_audio_path = temp_audio.name
-
         model = genai.GenerativeModel("gemini-1.5-flash")
-        sample_file = genai.upload_file(path=temp_audio_path, mime_type="audio/wav")
-        answer = model.generate_content(["תענה בקצרה בעברית", sample_file])
-        
-        # ניקוי התשובה מסימנים שמשבשים את המערכת
-        clean_answer = "".join(c for c in answer.text if c.isalnum() or c in " .")
-        
-        return f"id_list_message=t-{clean_answer}"
+        # שליחת הטקסט לבינה המלאכותית
+        response = model.generate_content(f"תענה בקצרה מאוד בעברית: {user_text}")
+
+        # ניקוי תווים שמשבשים את מנוע הדיבור (חשוב מאוד!)
+        # הסרנו כוכביות, סולמיות וסימני < >
+        clean_ans = "".join(c for c in response.text if c.isalnum() or c in " .")
+
+        return f"id_list_message=t-{clean_ans}"
 
     except Exception as e:
-        return "id_list_message=t-חלה שגיאה בעיבוד השאלה"
+        print(f"Error: {e}") # הדפסה ללוג של Render כדי שתוכל לראות אם יש שגיאה
+        return "id_list_message=t-חלה שגיאה בחיבור לבינה המלאכותית"
 
 if __name__ == '__main__':
+    # Render מחייב שימוש בפורט מהסביבה או 10000
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
