@@ -1,4 +1,4 @@
-from flask import Flask, request
+from flask import Flask, request, make_response
 import os
 import requests
 import google.generativeai as genai
@@ -6,83 +6,54 @@ import tempfile
 
 app = Flask(__name__)
 
-# הגדרת מפתח Gemini
+# הגדרת מפתחות
 GOOGLE_API_KEY = os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=GOOGLE_API_KEY)
-
-# הגדרת טוקן ימות המשיח (חובה כדי להוריד את קובץ ההקלטה)
 YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
 
 @app.route('/ask_ai', methods=['GET', 'POST'])
 def ask_ai():
-    # 1. בדיקה: האם יש לנו מפתחות מוגדרים?
-    if not GOOGLE_API_KEY:
-        return "id_list_message=t-שגיאה, חסר מפתח ג'מימני בהגדרות השרת"
-    if not YEMOT_TOKEN:
-        print("Warning: YEMOT_TOKEN is missing. Download might fail.")
-
-    # 2. קבלת נתונים מימות המשיח
-    # הפרמטר 'path' מכיל את נתיב ההקלטה בימות המשיח (למשל: EnterID/...)
+    # קבלת נתיב ההקלטה מימות המשיח
     audio_path = request.values.get('path')
 
-    # --- תרחיש א': אין הקלטה (כניסה ראשונה לשיחה) ---
+    # שלב א: אם אין הקלטה - מבקשים להקליט
     if not audio_path:
-        # אנו שולחים פקודת read: "תשמיע, תצפצף, תקליט, ותחזור לפה עם המשתנה path"
-        return "read=t-נא לשאול את השאלה לאחר הצפצוף, ובסיום להקיש סולמית&target=path&max=60&beep=yes"
+        # טקסט נקי לחלוטין ללא פסיקים או תווים מיוחדים
+        response_text = "read=t-נא להגיד את השאלה לאחר הצפצוף ובסיום להקיש סולמית&target=path&max=30&beep=yes"
+        return response_text
 
-    # --- תרחיש ב': יש הקלטה (חזרנו מהקלטה) ---
-    print(f"Recording received at path: {audio_path}")
-    
-    temp_file_path = None
+    # שלב ב: יש הקלטה - מעבדים אותה
     try:
-        # א. הורדת קובץ השמע מימות המשיח
-        # כתובת ה-API להורדת קבצים
+        # 1. הורדת הקובץ מימות המשיח
         download_url = f"https://www.call2all.co.il/ym/api/DownloadFile?token={YEMOT_TOKEN}&path={audio_path}"
-        
         response = requests.get(download_url)
         
         if response.status_code != 200:
-            print(f"Error downloading file: {response.text}")
-            return "id_list_message=t-חלה שגיאה בהורדת ההקלטה מהמערכת"
+            return "id_list_message=t-חלה שגיאה בהורדת הקובץ"
 
-        # ב. שמירת הקובץ זמנית בשרת של Render
-        # אנו יוצרים קובץ זמני עם סיומת wav
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-            temp_file.write(response.content)
-            temp_file_path = temp_file.name
+        # 2. שמירה זמנית ושליחה ל-Gemini
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
+            temp_audio.write(response.content)
+            temp_audio_path = temp_audio.name
 
-        # ג. שליחה ל-Gemini
-        print("Uploading file to Gemini...")
-        gemini_file = genai.upload_file(temp_file_path, mime_type="audio/wav")
-        
-        # בחירת המודל (Flash מהיר וטוב לאודיו)
+        # העלאה ל-AI
         model = genai.GenerativeModel("gemini-1.5-flash")
+        sample_file = genai.upload_file(path=temp_audio_path, mime_type="audio/wav")
         
-        print("Generating content...")
-        # הבקשה ל-AI: הקשב להקלטה וענה בעברית
-        result = model.generate_content([
-            "Listen to this audio recording (which is in Hebrew). Understand the user's question and provide a helpful, concise answer in Hebrew.",
-            gemini_file
+        # בקשת תשובה
+        answer = model.generate_content([
+            "הקשב להקלטה וענה בעברית בצורה תמציתית וברורה", 
+            sample_file
         ])
         
-        ai_response_text = result.text
+        # ניקוי התשובה מסימנים שמשבשים את הקריין
+        clean_answer = answer.text.replace("*", "").replace(">", "").replace("\n", " ")
         
-        # ניקוי: הסרת כוכביות או סימנים שלא נשמעים טוב ב-TTS
-        clean_response = ai_response_text.replace("*", "").replace("\n", ". ")
-        
-        print(f"AI Response: {clean_response}")
-
-        # ד. החזרת התשובה לימות המשיח
-        return f"id_list_message=t-{clean_response}"
+        return f"id_list_message=t-{clean_answer}"
 
     except Exception as e:
-        print(f"CRITICAL ERROR: {e}")
-        return "id_list_message=t-חלה שגיאה במערכת הבינה המלאכותית"
-        
-    finally:
-        # ה. ניקוי הקובץ הזמני מהשרת
-        if temp_file_path and os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
+        print(f"Error: {e}")
+        return "id_list_message=t-חלה שגיאה בעיבוד הנתונים"
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
