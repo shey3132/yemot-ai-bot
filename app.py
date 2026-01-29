@@ -1,26 +1,43 @@
 from flask import Flask, request
+import requests
+import google.generativeai as genai
 import os
 
 app = Flask(__name__)
 
+# הגדרת מפתח ה-API של Gemini - ודא שהגדרת אותו ב-Render ב-Environment Variables
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+
 @app.route('/ask_ai', methods=['GET', 'POST'])
 def ask_ai():
-    # שליפת הפרמטרים מימות המשיח (מופיעים בלוג כ-ApiSend)
+    # 1. שליפת הפרמטרים מימות המשיח (כפי שראינו ב-ApiSend בלוג)
     audio_path = request.values.get('path')
-    
-    # שלב א: אם אין עדיין הקלטה, נשלח פקודה לימות המשיח להקליט
+    token = request.values.get('ApiCallId') # מזהה שיחה לצרכי לוגים
+
+    # 2. שלב א: אם אין נתיב הקלטה, נבקש מימות המשיח להקליט
     if not audio_path:
-        # הפקודה הזו אומרת לימות המשיח: תשמיעו הודעה, תצפצפו ותקליטו לתוך משתנה שנקרא path
+        # פקודת read גורמת למערכת להשמיע הודעה, לצפצף ולהמתין להקלטה
+        # הפרמטר target=path אומר שההקלטה תחזור לשרת תחת המשתנה path
         return "read=t-נא להגיד את שאלתכם לאחר הצפצוף ובסיום להקיש סולמית&target=path&max=30&beep=yes"
 
-    # שלב ב: אם הגענו לכאן, סימן שיש הקלטה בתוך audio_path
+    # 3. שלב ב: יש הקלטה! ננסה לעבד אותה
     try:
-        # כאן יבוא הקוד של ה-AI (התמלול והתשובה של ג'מיני)
-        # כרגע נחזיר תשובה זמנית לבדיקה כדי לראות שההקלטה עברה
-        return f"id_list_message=t-ההקלטה התקבלה בהצלחה. הנתיב שלה הוא {audio_path}"
+        # בניית הקישור להורדת הקובץ מימות המשיח
+        # נניח שהקובץ הוא בפורמט wav כפי שמוגדר במערכת
+        file_url = f"https://www.call2all.co.il/ym/api/DownloadFile?path={audio_path}"
         
+        # כאן אתה אמור להוסיף את הלוגיקה של Gemini:
+        # א. הורדת הקובץ מה-URL
+        # ב. שליחתו ל-Gemini לתרגום (Speech-to-Text) ומענה
+        
+        # לצורך בדיקה ראשונית, נחזיר הודעה שהקובץ התקבל:
+        return f"id_list_message=t-ההקלטה התקבלה בהצלחה בנתיב {audio_path}. מעבד את פנייתך..."
+
     except Exception as e:
-        return "id_list_message=t-חלה שגיאה בעיבוד התמלול"
+        # במקרה של שגיאה בשרת, נחזיר הודעה מסודרת לימות המשיח
+        return "id_list_message=t-חלה שגיאה בתקשורת עם שרת ה-AI"
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    # הרצת השרת על הפורט ש-Render נותן
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
