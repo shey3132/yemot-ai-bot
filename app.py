@@ -1,67 +1,94 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request
 import os, requests, tempfile, logging, re, traceback
 from google import genai
 
-app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
+# הגדרות לוגינג
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("yemot-ai")
 
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
-YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
+app = Flask(__name__)
 
-client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
+def get_gemini_client():
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        logger.error("❌ GEMINI_API_KEY missing from environment")
+        return None
+    return genai.Client(api_key=api_key)
 
 @app.route("/ask_ai", methods=["GET", "POST"])
 def ask_ai():
-    # ימות המשיח לפעמים שולחים ב-GET ולפעמים ב-POST
     params = request.values.to_dict()
-    logger.info(f"Received Request: {params}")
+    logger.info(f"📥 Incoming: {params}")
 
-    # 1. בדיקת ניתוק
+    # בדיקת ניתוק
     if params.get("hangup") == "yes":
         return ""
 
-    # 2. שליפת הנתיב (בדיקה של כמה שמות משתנים אפשריים)
-    audio_path = params.get("path") or params.get("file_path") or params.get("record_path")
-    
-    if not audio_path:
-        logger.warning("No audio path found in request")
-        return "id_list_message=t-נא להקליט שאלה בסיום הסולמית"
+    # שליפת נתיב ההקלטה
+    audio_path = params.get("path")
+    token = os.environ.get("YEMOT_TOKEN")
 
-    if not YEMOT_TOKEN:
-        return "id_list_message=t-חסר טוקן שרת"
+    # שלב א: אם אין הקלטה - בקש הקלטה
+    if not audio_path:
+        logger.info("🎤 No audio path - sending record command")
+        # משתמשים ב-t כדי שהמערכת תקריא טקסט ולא תחפש קובץ 800
+        return "read=t-נא להקליט את שאלתכם ובסיום הקישו סולמית&target=path&max=20&beep=yes"
+
+    # שלב ב: עיבוד ההקלטה
+    if not token:
+        logger.error("❌ YEMOT_TOKEN missing")
+        return "id_list_message=t-חסר מפתח גישה לימות המשיח"
+
+    client = get_gemini_client()
+    if not client:
+        return "id_list_message=t-חסר מפתח גישה לבינה המלאכותית"
 
     tf_path = None
     try:
-        # 3. הורדת הקובץ
-        file_url = f"https://www.call2all.co.il/ym/api/DownloadFile?token={YEMOT_TOKEN}&path={audio_path}"
+        # הורדת הקובץ
+        file_url = f"https://www.call2all.co.il/ym/api/DownloadFile?token={token}&path={audio_path}"
+        logger.info(f"📂 Downloading: {audio_path}")
         r = requests.get(file_url, timeout=20)
         
         if r.status_code != 200:
-            return f"id_list_message=t-שגיאת הורדה {r.status_code}"
+            logger.error(f"❌ Download failed: {r.status_code}")
+            return "id_list_message=t-שגיאה בהורדת הקובץ המוקלט"
 
+        # שמירה זמנית
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
             tf.write(r.content)
             tf_path = tf.name
 
-        # 4. Gemini
-        uploaded = client.files.upload(path=tf_path)
+        # שליחה ל-Gemini
+        logger.info("🤖 Sending to Gemini...")
+        with open(tf_path, "rb") as f:
+            audio_data = f.read()
+
         response = client.models.generate_content(
             model="gemini-1.5-flash",
-            contents=["ענה בקצרה מאוד בעברית", uploaded]
+            contents=[
+                "ענה בקצרה מאוד ובעברית בלבד",
+                {"mime_type": "audio/wav", "data": audio_data}
+            ]
         )
 
-        text = response.text if response and response.text else "לא הצלחתי להבין"
-        clean = re.sub(r"[^\u0590-\u05FFa-zA-Z0-9\s\.\,]", "", text).strip()
+        ans = response.text if response and response.text else "לא הצלחתי להבין את השאלה"
+        
+        # ניקוי תווים מיוחדים שיכולים לשבש את ימות המשיח
+        clean_ans = re.sub(r"[^\u0590-\u05FFa-zA-Z0-9\s\.\,\?]", "", ans).strip()
+        logger.info(f"✅ AI Response: {clean_ans}")
 
-        return f"id_list_message=t-{clean}"
+        return f"id_list_message=t-{clean_ans}"
 
     except Exception as e:
+        logger.error(f"💥 Critical Error: {str(e)}")
         logger.error(traceback.format_exc())
-        return "id_list_message=t-אירעה שגיאה בעיבוד"
+        return "id_list_message=t-אירעה שגיאה בעיבוד הנתונים"
+
     finally:
         if tf_path and os.path.exists(tf_path):
             os.remove(tf_path)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
