@@ -29,8 +29,9 @@ def ask_ai():
     if params.get("hangup") == "yes":
         return ""
 
-    # שליפת נתיב ההקלטה (יכול להגיע כ-path או כ-ValName בהתאם להגדרות)
-    audio_path = params.get("path") or params.get("ValName")
+    # הנה השורה המעודכנת (שורה 28 בערך):
+    audio_path = params.get("record_path") or params.get("path") or params.get("ValName")
+    
     token = os.environ.get("YEMOT_TOKEN")
 
     # --- שלב א: בקשת הקלטה ---
