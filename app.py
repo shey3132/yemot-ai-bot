@@ -7,7 +7,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("yemot-ai")
 
 app = Flask(__name__)
-PROMPT_TEXT = "תענה בקצרה בעברית ופתח את השיחה בברכת שלום קצרה."
+PROMPT_TEXT = (
+    "\u05ea\u05e2\u05e0\u05d4 \u05d1\u05e7\u05e6\u05e8\u05d4 \u05d1\u05e2\u05d1\u05e8\u05d9\u05ea "
+    "\u05d5\u05e4\u05ea\u05d7 \u05d0\u05ea \u05d4\u05e9\u05d9\u05d7\u05d4 "
+    "\u05d1\u05d1\u05e8\u05db\u05ea \u05e9\u05dc\u05d5\u05dd \u05e7\u05e6\u05e8\u05d4."
+)
 
 @app.route("/ask_ai", methods=["GET", "POST"])
 def ask_ai():
