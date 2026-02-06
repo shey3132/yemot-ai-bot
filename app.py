@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from flask import Flask, request
 import os, requests, tempfile, logging, re
 from google import genai
@@ -6,6 +7,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("yemot-ai")
 
 app = Flask(__name__)
+PROMPT_TEXT = "תענה בקצרה בעברית ופתח את השיחה בברכת שלום קצרה."
 
 @app.route("/ask_ai", methods=["GET", "POST"])
 def ask_ai():
@@ -50,7 +52,7 @@ def ask_ai():
 
         greeting = "שלום"
         contents = [
-            "תענה בקצרה בעברית ופתח את השיחה בברכת שלום קצרה.",
+            PROMPT_TEXT,
             {"mime_type": "audio/wav", "data": audio_data},
         ]
         response = client.models.generate_content(
