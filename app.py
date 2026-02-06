@@ -49,13 +49,14 @@ def ask_ai():
             audio_data = f.read()
 
         greeting = "שלום"
+        contents = [
+            "תענה בקצרה בעברית ופתח את השיחה בברכת שלום קצרה.",
+            {"mime_type": "audio/wav", "data": audio_data},
+        ]
         response = client.models.generate_content(
             model="gemini-1.5-flash",
             contents=["תענה בקצרה בעברית", {"mime_type": "audio/wav", "data": audio_data}]
-            contents=[
-                "תענה בקצרה בעברית ופתח את השיחה בברכת שלום קצרה.",
-                {"mime_type": "audio/wav", "data": audio_data},
-            ],
+            contents=contents,
         )
 
         ans = re.sub(r"[^\u0590-\u05FFa-zA-Z0-9\s]", "", response.text)
