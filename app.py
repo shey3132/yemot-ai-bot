@@ -6,7 +6,7 @@ import google.generativeai as genai
 
 app = Flask(__name__)
 
-# משיכת מפתחות ממשתני הסביבה
+# משיכת מפתחות ממשתני הסביבה ב-Render
 YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
@@ -24,13 +24,15 @@ def ai_chat():
 
     if not audio_path:
         sessions[call_id] = [
-            {"role": "user", "parts": ["אתה עוזר קולי בעברית. ענה קצר, ברור וללא סימנים מיוחדים."]},
+            {"role": "user", "parts": ["אתה עוזר קולי. ענה קצר, ברור וללא סימנים מיוחדים."]},
             {"role": "model", "parts": ["שלום, אני מוכן לעזור."]}
         ]
         return "id_list_message=t-שלום, אני מודל ג'מיני, במה אוכל לעזור?&read=t-אנא דבר אחרי הצפצוף=user_audio,no,record,,,,,15,,"
 
+    # הורדת הקובץ עם Headers לזיהוי תקין
     download_url = f"https://www.call2all.co.il/ym/api/DownloadFile?token={YEMOT_TOKEN}&path={audio_path}"
-    audio_response = requests.get(download_url)
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    audio_response = requests.get(download_url, headers=headers)
     
     if audio_response.status_code != 200:
         return "id_list_message=t-שגיאה בקבלת הקובץ&read=t-אנא נסה שוב=user_audio,no,record,,,,,15,,"
@@ -41,6 +43,9 @@ def ai_chat():
 
     try:
         audio_file = genai.upload_file(path=tmp_filename)
+        if call_id not in sessions:
+            sessions[call_id] = [{"role": "user", "parts": ["אתה עוזר קולי. ענה קצר וללא סימנים."]}, {"role": "model", "parts": ["כן."]}]
+        
         sessions[call_id].append({"role": "user", "parts": [audio_file]})
         response = model.generate_content(sessions[call_id])
         ai_reply = response.text
@@ -48,9 +53,9 @@ def ai_chat():
         audio_file.delete()
     except Exception as e:
         ai_reply = "קרתה תקלה בעיבוד."
-
-    if os.path.exists(tmp_filename):
-        os.remove(tmp_filename)
+    finally:
+        if os.path.exists(tmp_filename):
+            os.remove(tmp_filename)
 
     clean_reply = ai_reply.replace("&", " ו").replace("=", " שווה ").replace("*", "").replace("#", "")
     return f"id_list_message=t-{clean_reply}&read=t-המשך לדבר=user_audio,no,record,,,,,15,,"
