@@ -13,20 +13,27 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-2.5-flash')
 
-# ניהול היסטוריית שיחות
+# ניהול היסטוריית שיחות לפי מספר טלפון
 sessions = {}
 
 @app.route('/ai-chat', methods=['GET', 'POST'])
 def ai_chat():
     data = request.form if request.method == 'POST' else request.args
-    call_id = data.get('ApiCallId')
+    
+    # שינוי קריטי: מזהה המשתמש יהיה מספר הטלפון שלו במקום מזהה השיחה הזמני
+    user_phone = data.get('ApiPhone')
+    # במקרה שאין מספר טלפון (חסוי), נשתמש במזהה השיחה כגיבוי
+    user_id = user_phone if user_phone else data.get('ApiCallId', 'unknown')
+    
     audio_path = data.get('user_audio')
 
     if not audio_path:
-        sessions[call_id] = [
-            {"role": "user", "parts": ["אתה עוזר קולי. ענה קצר, ברור וללא סימנים מיוחדים."]},
-            {"role": "model", "parts": ["שלום, אני מוכן לעזור."]}
-        ]
+        # אם זו פעם ראשונה שהמספר הזה מתקשר, נפתח לו היסטוריה חדשה
+        if user_id not in sessions:
+            sessions[user_id] = [
+                {"role": "user", "parts": ["אתה עוזר קולי. ענה קצר, ברור וללא סימנים מיוחדים."]},
+                {"role": "model", "parts": ["שלום, אני מוכן לעזור."]}
+            ]
         return "id_list_message=t-שלום, אני מודל ג'מיני, במה אוכל לעזור?&read=t-אנא דבר אחרי הצפצוף=user_audio,no,record,,,,,15,,"
 
     # הוספת הקידומת הנדרשת לימות המשיח
@@ -53,24 +60,23 @@ def ai_chat():
     try:
         audio_file = genai.upload_file(path=tmp_filename)
         
-        if call_id not in sessions:
-            sessions[call_id] = [{"role": "user", "parts": ["אתה עוזר קולי. ענה קצר וללא סימנים."]}, {"role": "model", "parts": ["כן."]}]
+        # וידוא שיש למשתמש הזה היסטוריה
+        if user_id not in sessions:
+            sessions[user_id] = [{"role": "user", "parts": ["אתה עוזר קולי. ענה קצר וללא סימנים."]}, {"role": "model", "parts": ["כן."]}]
         
-        # הוספת קובץ האודיו להיסטוריה ושליחה לגוגל
-        sessions[call_id].append({"role": "user", "parts": [audio_file]})
-        response = model.generate_content(sessions[call_id])
+        # הוספת קובץ האודיו להיסטוריה האישית של המספר הזה ושליחה לגוגל
+        sessions[user_id].append({"role": "user", "parts": [audio_file]})
+        response = model.generate_content(sessions[user_id])
         ai_reply = response.text
         
-        # שמירת תשובת המודל להיסטוריה
-        sessions[call_id].append({"role": "model", "parts": [ai_reply]})
-        
-        # הסרנו את audio_file.delete() כדי שהקובץ יישאר זמין לשאלה הבאה!
+        # שמירת תשובת המודל להיסטוריה האישית
+        sessions[user_id].append({"role": "model", "parts": [ai_reply]})
         
     except Exception as e:
         print(f"DEBUG: Gemini API Error: {e}")
         ai_reply = "קרתה תקלה בעיבוד מול גוגל."
     finally:
-        # מחיקת הקובץ הזמני מהשרת *שלנו* (Render) כדי שלא ייסתם
+        # מחיקת הקובץ הזמני מהשרת (Render)
         if os.path.exists(tmp_filename):
             os.remove(tmp_filename)
 
