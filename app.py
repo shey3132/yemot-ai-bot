@@ -6,36 +6,38 @@ import google.generativeai as genai
 
 app = Flask(__name__)
 
+# משיכת מפתחות ממשתני הסביבה ב-Render
 YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-2.5-flash')
 
+# ניהול היסטוריית שיחות
 sessions = {}
 
 @app.route('/ai-chat', methods=['GET', 'POST'])
 def ai_chat():
     data = request.form if request.method == 'POST' else request.args
-    user_id = data.get('ApiPhone') or data.get('ApiCallId', 'unknown')
+    user_phone = data.get('ApiPhone')
+    user_id = user_phone if user_phone else data.get('ApiCallId', 'unknown')
     audio_path = data.get('user_audio')
 
     if not audio_path:
+        if user_id not in sessions:
+            sessions[user_id] = [{"role": "user", "parts": ["אתה עוזר קולי. ענה קצר."]}, {"role": "model", "parts": ["שלום."]} ]
         return "id_list_message=t-שלום, אני מוכן. אנא דבר."
 
-    # הורדת האודיו מימות המשיח
+    # הורדת הקובץ מימות המשיח
     params = {"token": YEMOT_TOKEN, "path": f"ivr2:{audio_path}"}
     audio_response = requests.get("https://www.call2all.co.il/ym/api/DownloadFile", params=params)
     
-    # יצירת קובץ זמני (הדרך הנכונה שהייתה לנו)
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
         tmp_file.write(audio_response.content)
         tmp_filename = tmp_file.name
 
     try:
-        # העלאה לגוגל דרך הנתיב של הקובץ
         audio_file = genai.upload_file(path=tmp_filename)
-        
         if user_id not in sessions: sessions[user_id] = []
         sessions[user_id].append({"role": "user", "parts": [audio_file]})
         
@@ -43,19 +45,17 @@ def ai_chat():
         ai_reply = response.text
         sessions[user_id].append({"role": "model", "parts": [ai_reply]})
         
-        # פיסוק לשיפור הקול
-        clean_reply = ai_reply.replace("&", " ו").replace("=", " שווה ").replace(".", ". ,").replace("!", "! ,")
+        # ניקוי תווים בעייתיים והוספת פיסוק לשיפור הקול של סיוון
+        clean_reply = ai_reply.replace("&", " ו").replace("=", " שווה ").replace("*", "").replace("#", "")
+        clean_reply = clean_reply.replace(".", ". ,").replace("!", "! ,").replace("?", "? ,")
         
-        # החזרת תשובה בלבד - ללא read שקוטע את ההקראה
+        # החזרת טקסט בלבד - בלי פקודת הקלטה שקוטעת את ההשמעה
         return f"id_list_message=t-{clean_reply}"
-        
     except Exception as e:
-        print(f"DEBUG Error: {e}")
-        return "id_list_message=t-קרתה תקלה זמנית."
+        print(f"DEBUG: Error: {e}")
+        return "id_list_message=t-קרתה תקלה. נסה שוב."
     finally:
-        # מחיקת הקובץ הזמני כדי לא לסתום את השרת
-        if os.path.exists(tmp_filename):
-            os.remove(tmp_filename)
+        if os.path.exists(tmp_filename): os.remove(tmp_filename)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
