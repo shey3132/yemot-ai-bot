@@ -1,19 +1,18 @@
 import os
 import tempfile
 import requests
-from flask import Flask, request
+from flask import Flask, request, Response
 import google.generativeai as genai
 
 app = Flask(__name__)
 
-# משיכת מפתחות ממשתני הסביבה ב-Render
+# משיכת מפתחות
 YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-2.5-flash')
 
-# ניהול היסטוריית שיחות
 sessions = {}
 
 @app.route('/ai-chat', methods=['GET', 'POST'])
@@ -25,9 +24,10 @@ def ai_chat():
 
     if not audio_path:
         if user_id not in sessions:
-            sessions[user_id] = [{"role": "user", "parts": ["אתה עוזר קולי. ענה קצר."]}, {"role": "model", "parts": ["שלום."]}]
-        # הורדנו פסיקים מההודעה הראשונה כדי שימות המשיח לא יקרסו
-        return "id_list_message=t-שלום אני מוכן אנא דבר&read=t-אנא דבר=user_audio,no,record,,,,,15,,"
+            sessions[user_id] = [{"role": "user", "parts": ["אתה עוזר קולי. ענה קצר ותמציתי."]}, {"role": "model", "parts": ["שלום."]}]
+        
+        # שימוש ב-Response כדי להבטיח Plain Text לימות המשיח
+        return Response("read=t-שלום אני מוכן אנא דבר=user_audio,no,record,,,,,15,,", mimetype='text/plain')
 
     # הורדת הקובץ מימות המשיח
     params = {"token": YEMOT_TOKEN, "path": f"ivr2:{audio_path}"}
@@ -46,14 +46,22 @@ def ai_chat():
         ai_reply = response.text
         sessions[user_id].append({"role": "model", "parts": [ai_reply]})
         
-        # ניקוי תווים ששוברים את ימות המשיח (במיוחד פסיקים)
+        # 1. ניקוי תווים שבורים
         clean_reply = ai_reply.replace("&", " ו").replace("=", " שווה ").replace("*", "").replace("#", "")
         clean_reply = clean_reply.replace(",", " ").replace("-", " ")
         
-        return f"id_list_message=t-{clean_reply}&read=t-המשך=user_audio,no,record,,,,,15,,"
+        # 2. התיקון הקריטי: מחיקת כל ירידות השורה (Enters) כדי שזה יהיה שורה אחת בלבד!
+        clean_reply = clean_reply.replace("\n", " ").replace("\r", " ")
+        
+        # 3. לפי המדריך של ימות המשיח: אנחנו משתמשים בפקודת read שגם משמיעה וגם מקליטה מיד
+        api_response = f"read=t-{clean_reply}=user_audio,no,record,,,,,15,,"
+        
+        # 4. החזרת טקסט נקי בלבד (Plain Text)
+        return Response(api_response, mimetype='text/plain')
+
     except Exception as e:
         print(f"DEBUG: Error: {e}")
-        return "id_list_message=t-קרתה תקלה נסה שוב&read=t-אנא דבר=user_audio,no,record,,,,,15,,"
+        return Response("read=t-קרתה תקלה נסה שוב=user_audio,no,record,,,,,15,,", mimetype='text/plain')
     finally:
         if os.path.exists(tmp_filename): os.remove(tmp_filename)
 
