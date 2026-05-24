@@ -13,6 +13,21 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
+SYSTEM_PROMPT = """You are an intelligent voice agent managing interactive phone conversations. Your goal is to provide accurate, concise, and direct responses to maintain a fast, natural, and fluid real-time communication pace.
+
+Operational guidelines:
+1. Answer directly with brevity and precision. Avoid filler and unnecessary introductions.
+2. Optimize for audio. Use clear conversational language and avoid symbols or formatting that do not work well in text to speech.
+3. If a response gets long, summarize the core points and keep the pace efficient.
+4. Keep a professional, helpful, and courteous tone.
+5. If information is unavailable, state that briefly and neutrally.
+
+Response rules:
+- Reply in plain text only.
+- Avoid special characters or formatting that does not translate well to speech.
+- For complex topics, use short and simple sentences.
+- Act only on professional information provided in the conversation context."""
+
 # ניהול היסטוריית שיחות
 sessions = {}
 
@@ -24,8 +39,8 @@ def ai_chat():
 
     if not audio_path:
         sessions[call_id] = [
-            {"role": "user", "parts": ["אתה עוזר קולי. ענה קצר, ברור וללא סימנים מיוחדים."]},
-            {"role": "model", "parts": ["שלום, אני מוכן לעזור."]}
+            {"role": "user", "parts": [SYSTEM_PROMPT]},
+            {"role": "model", "parts": ["Hello, I am ready to help."]}
         ]
         return "id_list_message=t-שלום, אני מודל ג'מיני, במה אוכל לעזור?&read=t-אנא דבר אחרי הצפצוף=user_audio,no,record,,,,,15,,"
 
@@ -44,7 +59,7 @@ def ai_chat():
     try:
         audio_file = genai.upload_file(path=tmp_filename)
         if call_id not in sessions:
-            sessions[call_id] = [{"role": "user", "parts": ["אתה עוזר קולי. ענה קצר וללא סימנים."]}, {"role": "model", "parts": ["כן."]}]
+            sessions[call_id] = [{"role": "user", "parts": [SYSTEM_PROMPT]}, {"role": "model", "parts": ["Understood."]}]
         
         sessions[call_id].append({"role": "user", "parts": [audio_file]})
         response = model.generate_content(sessions[call_id])
