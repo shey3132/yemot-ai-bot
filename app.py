@@ -25,8 +25,9 @@ def ai_chat():
 
     if not audio_path:
         if user_id not in sessions:
-            sessions[user_id] = [{"role": "user", "parts": ["אתה עוזר קולי. ענה קצר."]}, {"role": "model", "parts": ["שלום."]} ]
-        return "id_list_message=t-שלום, אני מוכן. אנא דבר."
+            sessions[user_id] = [{"role": "user", "parts": ["אתה עוזר קולי. ענה קצר."]}, {"role": "model", "parts": ["שלום."]}]
+        # הורדנו פסיקים מההודעה הראשונה כדי שימות המשיח לא יקרסו
+        return "id_list_message=t-שלום אני מוכן אנא דבר&read=t-אנא דבר=user_audio,no,record,,,,,15,,"
 
     # הורדת הקובץ מימות המשיח
     params = {"token": YEMOT_TOKEN, "path": f"ivr2:{audio_path}"}
@@ -45,15 +46,14 @@ def ai_chat():
         ai_reply = response.text
         sessions[user_id].append({"role": "model", "parts": [ai_reply]})
         
-        # ניקוי תווים בעייתיים והוספת פיסוק לשיפור הקול של סיוון
+        # ניקוי תווים ששוברים את ימות המשיח (במיוחד פסיקים)
         clean_reply = ai_reply.replace("&", " ו").replace("=", " שווה ").replace("*", "").replace("#", "")
-        clean_reply = clean_reply.replace(".", ". ,").replace("!", "! ,").replace("?", "? ,")
+        clean_reply = clean_reply.replace(",", " ").replace("-", " ")
         
-        # החזרת טקסט בלבד - בלי פקודת הקלטה שקוטעת את ההשמעה
-        return f"id_list_message=t-{clean_reply}"
+        return f"id_list_message=t-{clean_reply}&read=t-המשך=user_audio,no,record,,,,,15,,"
     except Exception as e:
         print(f"DEBUG: Error: {e}")
-        return "id_list_message=t-קרתה תקלה. נסה שוב."
+        return "id_list_message=t-קרתה תקלה נסה שוב&read=t-אנא דבר=user_audio,no,record,,,,,15,,"
     finally:
         if os.path.exists(tmp_filename): os.remove(tmp_filename)
 
