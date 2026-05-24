@@ -11,7 +11,6 @@ YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
-# עדכון למודל החדיש של גוגל (גרסה 1.5 כבר לא נתמכת)
 model = genai.GenerativeModel('gemini-2.5-flash')
 
 # ניהול היסטוריית שיחות
@@ -30,14 +29,11 @@ def ai_chat():
         ]
         return "id_list_message=t-שלום, אני מודל ג'מיני, במה אוכל לעזור?&read=t-אנא דבר אחרי הצפצוף=user_audio,no,record,,,,,15,,"
 
-    # ==========================================
-    # התיקון של ימות המשיח: הוספת הקידומת ivr2:
-    # ==========================================
+    # הוספת הקידומת הנדרשת לימות המשיח
     full_audio_path = f"ivr2:{audio_path}"
     
     download_url = "https://www.call2all.co.il/ym/api/DownloadFile"
     
-    # שליחת הפרמטרים דרך params מבצעת URL Encode אוטומטי
     params = {
         "token": YEMOT_TOKEN,
         "path": full_audio_path
@@ -46,7 +42,6 @@ def ai_chat():
     
     audio_response = requests.get(download_url, params=params, headers=headers)
     
-    # בדיקה אם ההורדה נכשלה
     if audio_response.status_code != 200 or "Requested file does not exist" in audio_response.text:
         print(f"DEBUG: Download Error. Status: {audio_response.status_code}, Response: {audio_response.text}")
         return "id_list_message=t-שגיאה בקבלת הקובץ&read=t-אנא נסה שוב=user_audio,no,record,,,,,15,,"
@@ -61,17 +56,21 @@ def ai_chat():
         if call_id not in sessions:
             sessions[call_id] = [{"role": "user", "parts": ["אתה עוזר קולי. ענה קצר וללא סימנים."]}, {"role": "model", "parts": ["כן."]}]
         
+        # הוספת קובץ האודיו להיסטוריה ושליחה לגוגל
         sessions[call_id].append({"role": "user", "parts": [audio_file]})
         response = model.generate_content(sessions[call_id])
         ai_reply = response.text
         
+        # שמירת תשובת המודל להיסטוריה
         sessions[call_id].append({"role": "model", "parts": [ai_reply]})
-        audio_file.delete()
+        
+        # הסרנו את audio_file.delete() כדי שהקובץ יישאר זמין לשאלה הבאה!
         
     except Exception as e:
         print(f"DEBUG: Gemini API Error: {e}")
         ai_reply = "קרתה תקלה בעיבוד מול גוגל."
     finally:
+        # מחיקת הקובץ הזמני מהשרת *שלנו* (Render) כדי שלא ייסתם
         if os.path.exists(tmp_filename):
             os.remove(tmp_filename)
 
