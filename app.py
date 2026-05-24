@@ -11,7 +11,8 @@ YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+# עדכון למודל החדיש של גוגל (גרסה 1.5 כבר לא נתמכת)
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 # ניהול היסטוריית שיחות
 sessions = {}
@@ -69,7 +70,7 @@ def ai_chat():
         
     except Exception as e:
         print(f"DEBUG: Gemini API Error: {e}")
-        ai_reply = "קרתה תקלה בעיבוד."
+        ai_reply = "קרתה תקלה בעיבוד מול גוגל."
     finally:
         if os.path.exists(tmp_filename):
             os.remove(tmp_filename)
