@@ -6,12 +6,14 @@ import google.generativeai as genai
 
 app = Flask(__name__)
 
+# משיכת מפתחות ממשתני הסביבה ב-Render
 YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-2.5-flash')
 
+# ניהול היסטוריית שיחות
 sessions = {}
 
 @app.route('/ai-chat', methods=['GET', 'POST'])
@@ -23,9 +25,10 @@ def ai_chat():
 
     if not audio_path:
         if user_id not in sessions:
-            sessions[user_id] = [{"role": "user", "parts": ["אתה עוזר קולי. ענה קצר."]}, {"role": "model", "parts": ["שלום."]}]
+            sessions[user_id] = [{"role": "user", "parts": ["אתה עוזר קולי. ענה קצר."]}, {"role": "model", "parts": ["שלום."]} ]
         return "id_list_message=t-שלום, במה אוכל לעזור?&read=t-אנא דבר=user_audio,no,record,,,,,15,,"
 
+    # הורדת הקובץ מימות המשיח
     params = {"token": YEMOT_TOKEN, "path": f"ivr2:{audio_path}"}
     audio_response = requests.get("https://www.call2all.co.il/ym/api/DownloadFile", params=params)
     
@@ -45,6 +48,7 @@ def ai_chat():
         clean_reply = ai_reply.replace("&", " ו").replace("=", " שווה ").replace("*", "").replace("#", "")
         return f"id_list_message=t-{clean_reply}&read=t-המשך=user_audio,no,record,,,,,15,,"
     except Exception as e:
+        print(f"DEBUG: Error: {e}")
         return "id_list_message=t-קרתה תקלה. נסה שוב.&read=t-אנא דבר=user_audio,no,record,,,,,15,,"
     finally:
         if os.path.exists(tmp_filename): os.remove(tmp_filename)
