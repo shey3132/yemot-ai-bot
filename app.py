@@ -1,4 +1,5 @@
 import os
+import tempfile
 import requests
 from flask import Flask, request
 import google.generativeai as genai
@@ -20,24 +21,41 @@ def ai_chat():
     audio_path = data.get('user_audio')
 
     if not audio_path:
-        return "id_list_message=t-שלום, אני מוכן. אנא דבר.&read=t-הקלטה=user_audio,no,record,,,,,15,,"
+        return "id_list_message=t-שלום, אני מוכן. אנא דבר."
 
-    # הורדת האודיו
+    # הורדת האודיו מימות המשיח
     params = {"token": YEMOT_TOKEN, "path": f"ivr2:{audio_path}"}
     audio_response = requests.get("https://www.call2all.co.il/ym/api/DownloadFile", params=params)
     
-    # שליחה לג'מיני (בלי לשמור קבצים מיותרים ב-Render)
-    audio_file = genai.upload_file(content=audio_response.content, mime_type="audio/wav")
-    
-    if user_id not in sessions: sessions[user_id] = []
-    sessions[user_id].append({"role": "user", "parts": [audio_file]})
-    
-    response = model.generate_content(sessions[user_id])
-    ai_reply = response.text
-    sessions[user_id].append({"role": "model", "parts": [ai_reply]})
-    
-    # פיסוק לשיפור הקול
-    clean_reply = ai_reply.replace("&", " ו").replace("=", " שווה ").replace(".", ". ,").replace("!", "! ,")
-    
-    # החזרת תשובה בלבד - ללא read שקוטע את ההקראה
-    return f"id_list_message=t-{clean_reply}"
+    # יצירת קובץ זמני (הדרך הנכונה שהייתה לנו)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
+        tmp_file.write(audio_response.content)
+        tmp_filename = tmp_file.name
+
+    try:
+        # העלאה לגוגל דרך הנתיב של הקובץ
+        audio_file = genai.upload_file(path=tmp_filename)
+        
+        if user_id not in sessions: sessions[user_id] = []
+        sessions[user_id].append({"role": "user", "parts": [audio_file]})
+        
+        response = model.generate_content(sessions[user_id])
+        ai_reply = response.text
+        sessions[user_id].append({"role": "model", "parts": [ai_reply]})
+        
+        # פיסוק לשיפור הקול
+        clean_reply = ai_reply.replace("&", " ו").replace("=", " שווה ").replace(".", ". ,").replace("!", "! ,")
+        
+        # החזרת תשובה בלבד - ללא read שקוטע את ההקראה
+        return f"id_list_message=t-{clean_reply}"
+        
+    except Exception as e:
+        print(f"DEBUG Error: {e}")
+        return "id_list_message=t-קרתה תקלה זמנית."
+    finally:
+        # מחיקת הקובץ הזמני כדי לא לסתום את השרת
+        if os.path.exists(tmp_filename):
+            os.remove(tmp_filename)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
