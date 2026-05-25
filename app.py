@@ -3,7 +3,6 @@ import tempfile
 import requests
 from flask import Flask, request, Response
 import google.generativeai as genai
-from faster_whisper import WhisperModel
 
 app = Flask(__name__)
 
@@ -12,10 +11,8 @@ YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash')
-
-# טעינת המודל המופחת בגרסת int8 - צורך מינימום זיכרון לשרת חינמי
-whisper_model = WhisperModel("tiny", device="cpu", compute_type="int8")
+# שימוש במודל החסכוני והמהיר יותר
+model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
 sessions = {}
 
@@ -28,12 +25,12 @@ def ai_chat():
 
     if not audio_path:
         if user_id not in sessions:
-            sessions[user_id] = [{"role": "user", "parts": ["אתה עוזר קולי. ענה קצר ותמציתי."]}, {"role": "model", "parts": ["שלום."]}]
+            # פתרון ל-2 הבעיות: הגדרת השנה ל-2026, ושינוי ההוראה לתשובה מפורטת וטבעית
+            system_prompt = "אנחנו בשנת 2026. אתה עוזר קולי חכם שעונה בשיחה קולית. ענה בצורה מפורטת, טבעית, שירותית ובגובה העיניים."
+            sessions[user_id] = [{"role": "user", "parts": [system_prompt]}, {"role": "model", "parts": ["הבנתי, אני מוכן לעזור."]}]
         
-        # שימוש ב-Response כדי להבטיח Plain Text לימות המשיח
         return Response("read=t-שלום אני מוכן אנא דבר=user_audio,no,record,,,,,15,,", mimetype='text/plain')
 
-    # הורדת הקובץ מימות המשיח
     params = {"token": YEMOT_TOKEN, "path": f"ivr2:{audio_path}"}
     audio_response = requests.get("https://www.call2all.co.il/ym/api/DownloadFile", params=params)
     
@@ -42,35 +39,46 @@ def ai_chat():
         tmp_filename = tmp_file.name
 
     try:
-        # תמלול מהיר וחסכוני במשאבים
-        segments, info = whisper_model.transcribe(tmp_filename, language="he", beam_size=1)
-        user_text = "".join([segment.text for segment in segments])
-        
+        # העלאת האודיו לגוגל
+        audio_file = genai.upload_file(path=tmp_filename)
         if user_id not in sessions: sessions[user_id] = []
-        sessions[user_id].append({"role": "user", "parts": [user_text]})
         
-        response = model.generate_content(sessions[user_id])
+        # פתרון המכסות: יוצרים רשימה זמנית רק לשאלה הזו, שכוללת את ההיסטוריה + האודיו הנוכחי
+        current_chat = sessions[user_id] + [{"role": "user", "parts": [audio_file]}]
+        
+        # מקבלים תשובה מג'מיני
+        response = model.generate_content(current_chat)
         ai_reply = response.text
+        
+        # שומרים להיסטוריה *רק טקסט* כדי לא לפוצץ את הזיכרון והמכסות של גוגל בבקשות הבאות
+        sessions[user_id].append({"role": "user", "parts": ["(המשתמש שלח הודעה קולית והיא נענתה)"]})
         sessions[user_id].append({"role": "model", "parts": [ai_reply]})
         
-        # 1. ניקוי תווים שבורים
+        # הגבלת היסטוריה: שומרים רק את 8 ההודעות האחרונות כדי שהשיחה תרוץ לנצח בלי לחרוג מהמכסה
+        if len(sessions[user_id]) > 8:
+            sessions[user_id] = sessions[user_id][-8:]
+        
+        # ניקוי תווים
         clean_reply = ai_reply.replace("&", " ו").replace("=", " שווה ").replace("*", "").replace("#", "")
         clean_reply = clean_reply.replace(",", " ").replace("-", " ")
-        
-        # 2. התיקון הקריטי: מחיקת כל ירידות השורה (Enters) כדי שזה יהיה שורה אחת בלבד!
         clean_reply = clean_reply.replace("\n", " ").replace("\r", " ")
         
-        # 3. לפי המדריך של ימות המשיח: אנחנו משתמשים בפקודת read שגם משמיעה וגם מקליטה מיד
         api_response = f"read=t-{clean_reply}=user_audio,no,record,,,,,15,,"
-        
-        # 4. החזרת טקסט נקי בלבד (Plain Text)
         return Response(api_response, mimetype='text/plain')
 
     except Exception as e:
         print(f"DEBUG: Error: {e}")
         return Response("read=t-קרתה תקלה נסה שוב=user_audio,no,record,,,,,15,,", mimetype='text/plain')
+    
     finally:
+        # מחיקת הקובץ הזמני מהשרת שלך
         if os.path.exists(tmp_filename): os.remove(tmp_filename)
+        # מחיקת הקובץ מהשרתים של גוגל כדי לחסוך לך שטח אחסון במשתמש החינמי!
+        try:
+            if 'audio_file' in locals():
+                genai.delete_file(audio_file.name)
+        except Exception:
+            pass
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
