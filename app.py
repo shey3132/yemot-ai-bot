@@ -15,7 +15,7 @@ genai.configure(api_key=GEMINI_API_KEY)
 # טעינת המודל + הפעלת חיפוש בזמן אמת בגוגל (Google Search Grounding)
 model = genai.GenerativeModel(
     'gemini-2.5-flash-lite',
-    tools="google_search"
+    tools=[{"google_search": {}}]
 )
 
 sessions = {}
