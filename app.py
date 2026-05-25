@@ -3,6 +3,7 @@ import tempfile
 import requests
 from flask import Flask, request, Response
 import google.generativeai as genai
+import whisper
 
 app = Flask(__name__)
 
@@ -12,6 +13,9 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-2.5-flash')
+
+# טעינת המודל של Whisper - שימוש ב-tiny בגלל מגבלות משאבים בשרת חינמי
+whisper_model = whisper.load_model("tiny")
 
 sessions = {}
 
@@ -38,9 +42,13 @@ def ai_chat():
         tmp_filename = tmp_file.name
 
     try:
-        audio_file = genai.upload_file(path=tmp_filename)
+        # תמלול מקומי באמצעות Whisper
+        transcription = whisper_model.transcribe(tmp_filename, language="he")
+        user_text = transcription["text"]
+        
         if user_id not in sessions: sessions[user_id] = []
-        sessions[user_id].append({"role": "user", "parts": [audio_file]})
+        # שליחת הטקסט המתומלל לג'מיני במקום קובץ האודיו
+        sessions[user_id].append({"role": "user", "parts": [user_text]})
         
         response = model.generate_content(sessions[user_id])
         ai_reply = response.text
