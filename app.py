@@ -147,16 +147,23 @@ def send_summary_email(caller_id, history, name):
         msg['Subject'] = subject
         msg.attach(MIMEText(body, 'html', 'utf-8'))
 
-        print("[EMAIL SYSTEM] Connecting to SMTP via SSL (Port 465)...")
-        # שימוש ב-SMTP_SSL קשיח לעקיפת חסימות רשת של שרתי ענן
-        server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=15)
+        # ננסה להתחבר בפורט 587 עם הגבלת זמן כדי למנוע קפיאה
+        print("[EMAIL SYSTEM] Trying to connect via Port 587 (Timeout=7)...")
+        server = smtplib.SMTP("smtp.gmail.com", 587, timeout=7)
+        server.ehlo()
+        server.starttls()  # שכבת האבטחה
+        server.ehlo()
+        
+        print("[EMAIL SYSTEM] Logging in...")
         server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        
+        print("[EMAIL SYSTEM] Sending message...")
         server.sendmail(EMAIL_ADDRESS, TARGET_EMAIL, msg.as_string())
         server.quit()
         print(f"[EMAIL SYSTEM] Email summary sent successfully for {caller_id}")
         
     except Exception as e:
-        print(f"[EMAIL SYSTEM] Failed to send email: {e}")
+        print(f"[EMAIL SYSTEM] Error occurred: {e}")
 
 # =========================
 # MAIN ROUTE
