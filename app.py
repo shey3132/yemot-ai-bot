@@ -3,7 +3,6 @@ import time
 import tempfile
 import requests
 import re
-import azure.cognitiveservices.speech as speechsdk
 
 from flask import Flask, request, Response
 from groq import Groq
@@ -27,6 +26,10 @@ RECORD_COMMAND = "user_audio,no,record,,,yes,yes,no,1,20"
 # MEMORY
 # =========================
 conversation_memory = {}
+
+# =========================
+# CALLER NAMES
+# =========================
 caller_names = {}
 
 # =========================
@@ -47,6 +50,7 @@ def clean_text(text):
     text = text.replace("=", " ")
 
     text = re.sub(r'[^\u0590-\u05FFa-zA-Z0-9\s]', '', text)
+
     text = " ".join(text.split())
 
     return text
@@ -60,82 +64,14 @@ def quick_answer(user_text):
     text = user_text.lower()
 
     if "מה השעה" in text:
-        return f"השעה עכשיו {time.strftime('%H:%M')}"
+        current_time = time.strftime("%H:%M")
+        return f"השעה עכשיו {current_time}"
 
     if "מה התאריך" in text:
-        return f"התאריך היום {time.strftime('%d/%m/%Y')}"
+        current_date = time.strftime("%d/%m/%Y")
+        return f"התאריך היום {current_date}"
 
     return None
-
-
-# =========================
-# AZURE TTS
-# =========================
-def generate_tts(text):
-
-    output_file = tempfile.NamedTemporaryFile(
-        suffix=".mp3",
-        delete=False
-    )
-
-    speech_config = speechsdk.SpeechConfig(
-        subscription=os.environ.get("AZURE_SPEECH_KEY"),
-        region=os.environ.get("AZURE_REGION")
-    )
-
-    speech_config.speech_synthesis_voice_name = "he-IL-HilaNeural"
-
-    audio_config = speechsdk.audio.AudioOutputConfig(
-        filename=output_file.name
-    )
-
-    synthesizer = speechsdk.SpeechSynthesizer(
-        speech_config=speech_config,
-        audio_config=audio_config
-    )
-
-    result = synthesizer.speak_text_async(text).get()
-
-    if result.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
-        raise Exception("TTS failed")
-
-    return output_file.name
-
-
-# =========================
-# TRY TTS (SAFE)
-# =========================
-def try_tts(text):
-
-    try:
-        file_path = generate_tts(text)
-        return file_path, True
-    except Exception as e:
-        print("TTS ERROR:", e)
-        return None, False
-
-
-# =========================
-# UPLOAD TO YEMOT
-# =========================
-def upload_to_yemot(file_path, filename):
-
-    url = "https://www.call2all.co.il/ym/api/UploadFile"
-
-    with open(file_path, "rb") as f:
-
-        files = {"file": f}
-
-        data = {
-            "token": YEMOT_TOKEN,
-            "path": f"ivr2:/tts/{filename}"
-        }
-
-        response = requests.post(url, files=files, data=data)
-
-    print("UPLOAD:", response.text)
-
-    return f"f-/ivr2/tts/{filename.replace('.mp3','')}"
 
 
 # =========================
@@ -146,12 +82,21 @@ def ai_chat():
 
     start_time = time.time()
 
+    # =========================
+    # HANGUP
+    # =========================
     if request.values.get('hangup') == 'yes':
         return Response("noop", mimetype='text/plain')
 
+    # =========================
+    # GET AUDIO
+    # =========================
     audio_list = request.values.getlist('user_audio')
     audio_path = audio_list[-1] if audio_list else None
 
+    # =========================
+    # START CALL
+    # =========================
     if not audio_path:
 
         return Response(
@@ -159,28 +104,51 @@ def ai_chat():
             mimetype='text/plain'
         )
 
+    print(f"Processing audio: {audio_path}")
+
+    # =========================
+    # DOWNLOAD AUDIO
+    # =========================
     yemot_path = f"ivr2:{audio_path}"
+
+    params = {
+        "token": YEMOT_TOKEN,
+        "path": yemot_path
+    }
+
     tmp_filename = None
 
     try:
 
         audio_response = requests.get(
             "https://www.call2all.co.il/ym/api/DownloadFile",
-            params={"token": YEMOT_TOKEN, "path": yemot_path},
+            params=params,
             timeout=20
         )
 
+        audio_response.raise_for_status()
+
+        # קובץ קטן מדי
         if len(audio_response.content) < 1000:
+
             return Response(
                 f"read=t-לא שמעתי טוב אנא נסו שוב={RECORD_COMMAND}",
                 mimetype='text/plain'
             )
 
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp.write(audio_response.content)
-            tmp_filename = tmp.name
+        with tempfile.NamedTemporaryFile(
+            suffix=".wav",
+            delete=False
+        ) as tmp_file:
 
+            tmp_file.write(audio_response.content)
+            tmp_filename = tmp_file.name
+
+        # =========================
+        # WHISPER
+        # =========================
         with open(tmp_filename, "rb") as file:
+
             transcription = client.audio.transcriptions.create(
                 file=file,
                 model="whisper-large-v3",
@@ -189,76 +157,127 @@ def ai_chat():
 
         user_text = transcription.text.strip()
 
+        print(f"User said: {user_text}")
+
+        # =========================
+        # EMPTY TEXT
+        # =========================
         if not user_text:
+
             return Response(
-                f"read=t-לא שמעתי כלום={RECORD_COMMAND}",
+                f"read=t-לא שמעתי כלום אנא נסו שוב={RECORD_COMMAND}",
                 mimetype='text/plain'
             )
 
+        # =========================
+        # QUICK ANSWERS
+        # =========================
         fast_reply = quick_answer(user_text)
 
         if fast_reply:
 
             clean_reply = clean_text(fast_reply)
 
-            tts_file, ok = try_tts(clean_reply)
+            return Response(
+                f"read=t-{clean_reply}={RECORD_COMMAND}",
+                mimetype='text/plain'
+            )
 
-            if ok:
+        # =========================
+        # CALLER ID
+        # =========================
+        caller_id = request.values.get('ApiPhone', 'unknown')
 
-                filename = f"quick_{int(time.time())}.mp3"
-                uploaded = upload_to_yemot(tts_file, filename)
+        if caller_id not in conversation_memory:
+            conversation_memory[caller_id] = []
 
-                os.remove(tts_file)
+        # =========================
+        # SAVE NAME
+        # =========================
+        if "קוראים לי" in user_text:
+
+            try:
+
+                extracted_name = user_text.split("קוראים לי")[-1].strip()
+
+                if len(extracted_name) < 20:
+                    caller_names[caller_id] = extracted_name
+
+            except:
+                pass
+
+        known_name = caller_names.get(caller_id)
+
+        # =========================
+        # WHAT IS MY NAME
+        # =========================
+        if "איך קוראים לי" in user_text:
+
+            if known_name:
 
                 return Response(
-                    f"id_list_message={uploaded}={RECORD_COMMAND}",
+                    f"read=t-קוראים לך {known_name}={RECORD_COMMAND}",
                     mimetype='text/plain'
                 )
 
             else:
 
                 return Response(
-                    f"read=t-{clean_reply}={RECORD_COMMAND}",
+                    f"read=t-עדיין לא אמרת לי איך קוראים לך={RECORD_COMMAND}",
                     mimetype='text/plain'
                 )
 
-        caller_id = request.values.get('ApiPhone', 'unknown')
-
-        if caller_id not in conversation_memory:
-            conversation_memory[caller_id] = []
-
-        if "קוראים לי" in user_text:
-            try:
-                name = user_text.split("קוראים לי")[-1].strip()
-                if len(name) < 20:
-                    caller_names[caller_id] = name
-            except:
-                pass
-
-        known_name = caller_names.get(caller_id)
-
-        system_prompt = "אתה עוזר קולי בשם נועם ענה בעברית קצרה וברורה"
+        # =========================
+        # SYSTEM PROMPT
+        # =========================
+        system_prompt = (
+            "קוראים לך נועם "
+            "אתה עוזר קולי חכם ואנושי בטלפון "
+            "השם שלך הוא נועם "
+            "אל תגיד שלמשתמש קוראים נועם "
+            "דבר טבעי וחברותי "
+            "ענה ברור ומדויק "
+            "אל תשתמש בסימני פיסוק "
+            "אל תחזור על משפטים קבועים "
+            "אל תגיד אני כאן כדי לעזור "
+            "אם אינך יודע תגיד שאינך יודע "
+            "שמור תשובות קצרות יחסית "
+        )
 
         if known_name:
             system_prompt += f"השם של המשתמש הוא {known_name} "
 
+        # =========================
+        # MEMORY
+        # =========================
         conversation_memory[caller_id].append({
             "role": "user",
             "content": user_text
         })
 
+        # רק 6 הודעות אחרונות
         conversation_memory[caller_id] = conversation_memory[caller_id][-6:]
 
+        # =========================
+        # AI CHAT
+        # =========================
         chat = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[{"role": "system", "content": system_prompt}]
-            + conversation_memory[caller_id],
+            messages=[
+                {
+                    "role": "system",
+                    "content": system_prompt
+                }
+            ] + conversation_memory[caller_id],
             temperature=0.8,
             max_tokens=120
         )
 
         ai_reply = chat.choices[0].message.content.strip()
 
+        # =========================
+        # SAVE AI MEMORY
+        # =========================
         conversation_memory[caller_id].append({
             "role": "assistant",
             "content": ai_reply
@@ -266,43 +285,44 @@ def ai_chat():
 
         conversation_memory[caller_id] = conversation_memory[caller_id][-6:]
 
+        # =========================
+        # CLEAN
+        # =========================
         clean_reply = clean_text(ai_reply)
 
-        tts_file, ok = try_tts(clean_reply)
+        print(f"AI reply: {clean_reply}")
 
-        if ok:
+        print(
+            f"Response time: "
+            f"{time.time() - start_time:.2f} seconds"
+        )
 
-            filename = f"{caller_id}_{int(time.time())}.mp3"
-            uploaded = upload_to_yemot(tts_file, filename)
-
-            os.remove(tts_file)
-
-            return Response(
-                f"id_list_message={uploaded}={RECORD_COMMAND}",
-                mimetype='text/plain'
-            )
-
-        else:
-
-            return Response(
-                f"read=t-{clean_reply}={RECORD_COMMAND}",
-                mimetype='text/plain'
-            )
+        # =========================
+        # RETURN TO YEMOT
+        # =========================
+        return Response(
+            f"read=t-{clean_reply}={RECORD_COMMAND}",
+            mimetype='text/plain'
+        )
 
     except Exception as e:
 
-        print("ERROR:", e)
+        print(f"ERROR: {e}")
 
         return Response(
-            f"read=t-בעיה במערכת נסו שוב={RECORD_COMMAND}",
+            f"read=t-נועם עמוס כרגע אנא נסו שוב בעוד כמה שניות={RECORD_COMMAND}",
             mimetype='text/plain'
         )
 
     finally:
 
+        # DELETE TEMP FILE
         if tmp_filename and os.path.exists(tmp_filename):
             os.remove(tmp_filename)
 
 
+# =========================
+# RUN
+# =========================
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
