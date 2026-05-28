@@ -2,109 +2,165 @@ import os
 import time
 import tempfile
 import requests
+import re
+
 from flask import Flask, request, Response
-from google import genai
-from google.genai import types
+from groq import Groq
 
 app = Flask(__name__)
 
 YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = Groq(api_key=GROQ_API_KEY)
+
 RECORD_COMMAND = "user_audio,no,record,,,yes,yes,no,1,60"
+
+# =========================
+# ניקוי טקסט להקראה בימות
+# =========================
+def clean_text(text):
+    text = text.replace("**", "").replace("*", "").replace("#", "")
+    text = text.replace(",", "")
+    text = text.replace(".", "")
+    text = text.replace("?", "")
+    text = text.replace("!", "")
+    text = text.replace(":", "")
+    text = text.replace("-", " ")
+    text = text.replace("&", " ו ")
+    text = text.replace("=", " ")
+
+    # ניקוי תווים בעייתיים
+    text = re.sub(r'[^\u0590-\u05FFa-zA-Z0-9\s]', '', text)
+
+    # רווחים כפולים
+    text = " ".join(text.split())
+
+    return text
+
 
 @app.route('/ai-chat', methods=['GET', 'POST'])
 def ai_chat():
+
+    # טיפול בניתוק
     if request.values.get('hangup') == 'yes':
         return Response("noop", mimetype='text/plain')
 
-    # קבלת קובץ השמע האחרון מהרשימה
     audio_list = request.values.getlist('user_audio')
     audio_path = audio_list[-1] if audio_list else None
 
-    # שלב א': כניסה ראשונית
+    # התחלת שיחה
     if not audio_path:
         return Response(
-            f"read=t-שלום אני מאזין במה אוכל לעזור={RECORD_COMMAND}", 
+            f"read=t-שלום אני מאזין במה אוכל לעזור={RECORD_COMMAND}",
             mimetype='text/plain'
         )
 
-    print(f"Processing latest audio file using Gemini 1.5 Flash: {audio_path}")
+    print(f"Processing audio: {audio_path}")
 
-    # שלב ב': הורדת הקובץ מימות המשיח
     yemot_path = f"ivr2:{audio_path}"
-    params = {"token": YEMOT_TOKEN, "path": yemot_path}
+
+    params = {
+        "token": YEMOT_TOKEN,
+        "path": yemot_path
+    }
+
+    tmp_filename = None
+
     try:
-        audio_response = requests.get("https://www.call2all.co.il/ym/api/DownloadFile", params=params)
+        # הורדת ההקלטה מימות
+        audio_response = requests.get(
+            "https://www.call2all.co.il/ym/api/DownloadFile",
+            params=params,
+            timeout=20
+        )
+
         audio_response.raise_for_status()
-        
+
+        # בדיקת קובץ תקין
+        if len(audio_response.content) < 1000:
+            return Response(
+                f"read=t-ההקלטה לא התקבלה טוב אנא נסו שוב={RECORD_COMMAND}",
+                mimetype='text/plain'
+            )
+
+        # שמירה זמנית
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
             tmp_file.write(audio_response.content)
             tmp_filename = tmp_file.name
-    except Exception as e:
-        print(f"Error downloading audio: {e}")
-        return Response(f"read=t-חלה שגיאה בקבלת השמע אנא נסו שוב={RECORD_COMMAND}", mimetype='text/plain')
 
-    # שלב ג': עיבוד ה-AI באמצעות מודל gemini-1.5-flash המרכזי
-    try:
-        audio_file = client.files.upload(file=tmp_filename)
-        
-        max_retries = 2
-        ai_reply = None
-        
-        for attempt in range(max_retries):
-            try:
-                # שימוש במודל היציב והבדוק ביותר
-                response = client.models.generate_content(
-                    model='gemini-1.5-flash',
-                    contents=[
-                        "אתה עוזר קולי חכם בטלפון. ענה בקיצור נמרץ מאוד (עד 2 משפטים). אל תשתמש בשום סימני פיסוק - ללא פסיקים, ללא נקודות, וללא סימני שאלה. תן תשובה חלקה למנוע הקראה.",
-                        audio_file
-                    ],
-                    config=types.GenerateContentConfig(
-                        tools=[types.Tool(google_search=types.GoogleSearch())]
+        # =========================
+        # תמלול Whisper
+        # =========================
+        with open(tmp_filename, "rb") as file:
+
+            transcription = client.audio.transcriptions.create(
+                file=file,
+                model="whisper-large-v3",
+                language="he"
+            )
+
+        user_text = transcription.text.strip()
+
+        print(f"User said: {user_text}")
+
+        if not user_text:
+            return Response(
+                f"read=t-לא שמעתי כלום אנא נסו שוב={RECORD_COMMAND}",
+                mimetype='text/plain'
+            )
+
+        # =========================
+        # AI RESPONSE
+        # =========================
+        chat = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "אתה עוזר קולי חכם בטלפון "
+                        "ענה בקצרה מאוד "
+                        "בלי סימני פיסוק "
+                        "בלי אימוגים "
+                        "עד שני משפטים קצרים"
                     )
-                )
-                ai_reply = response.text
-                break
-            except Exception as e:
-                error_str = str(e).upper()
-                print(f"Google API attempt {attempt + 1} failed: {e}")
-                
-                if "RESOURCE_EXHAUSTED" in error_str or "429" in error_str:
-                    print("Quota hit (429) on Gemini 1.5 Flash. Breaking retry loop.")
-                    break
-                
-                if attempt < max_retries - 1:
-                    time.sleep(3)
-                else:
-                    raise e
-        
-        if not ai_reply:
-            return Response(f"read=t-המערכת עמוסה כרגע אנא דברו שוב בעוד כמה שניות={RECORD_COMMAND}", mimetype='text/plain')
-            
-        # ניקוי הטקסט עבור הפארסר של ימות המשיח
-        clean_reply = ai_reply.replace("**", "").replace("*", "").replace("#", "")
-        clean_reply = clean_reply.replace(",", "").replace(".", "").replace("?", "").replace("!", "").replace(":", "").replace("-", " ")
-        clean_reply = clean_reply.replace("&", " ו ").replace("=", " ")
-        clean_reply = " ".join(clean_reply.split())
-        
+                },
+                {
+                    "role": "user",
+                    "content": user_text
+                }
+            ],
+            temperature=0.5,
+            max_tokens=120
+        )
+
+        ai_reply = chat.choices[0].message.content.strip()
+
+        clean_reply = clean_text(ai_reply)
+
+        print(f"AI reply: {clean_reply}")
+
         return Response(
-            f"read=t-{clean_reply}={RECORD_COMMAND}", 
+            f"read=t-{clean_reply}={RECORD_COMMAND}",
             mimetype='text/plain'
         )
 
     except Exception as e:
-        print(f"Error during AI processing: {e}")
-        return Response(f"read=t-העוזר החכם עמוס כרגע אנא המתן מספר שניות ונסה שוב={RECORD_COMMAND}", mimetype='text/plain')
-    
+
+        print(f"ERROR: {e}")
+
+        return Response(
+            f"read=t-המערכת עמוסה כרגע אנא נסו שוב בעוד כמה שניות={RECORD_COMMAND}",
+            mimetype='text/plain'
+        )
+
     finally:
-        if 'tmp_filename' in locals() and os.path.exists(tmp_filename): 
+
+        # ניקוי קובץ זמני
+        if tmp_filename and os.path.exists(tmp_filename):
             os.remove(tmp_filename)
-        if 'audio_file' in locals():
-            try: client.files.delete(name=audio_file.name)
-            except: pass
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
