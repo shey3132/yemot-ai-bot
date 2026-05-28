@@ -106,7 +106,7 @@ def quick_answer(user_text):
     return None
 
 # =========================
-# SEND EMAIL VIA GOOGLE BYPASS (GORGEOUS HTML)
+# SEND EMAIL VIA GOOGLE BYPASS (FIXED GMAIL HTML)
 # =========================
 def send_summary_email(caller_id, history, name):
     if not GOOGLE_SCRIPT_URL or not TARGET_EMAIL:
@@ -117,47 +117,50 @@ def send_summary_email(caller_id, history, name):
         display_name = name if name else "משתמש לא ידוע"
         subject = f"📄 סיכום שיחה מנועם: {display_name} ({caller_id})"
         
-        # בניית עיצוב ה-HTML היוקרתי
+        # בניית עיצוב ה-HTML היוקרתי והיציב עבור Gmail (ללא פלקסבוקס שקורס)
         body = """
-        <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; direction: rtl; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
+        <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; direction: rtl; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.05); background-color: #ffffff;">
             <div style="background: linear-gradient(135deg, #4F46E5, #3730A3); color: white; padding: 24px; text-align: center;">
                 <h1 style="margin: 0; font-size: 22px; font-weight: 600; letter-spacing: 0.5px;">סיכום שיחה קולית - נועם AI</h1>
                 <p style="margin: 5px 0 0 0; opacity: 0.8; font-size: 14px;">נשמר באופן אוטומטי עם ניתוק השיחה</p>
             </div>
             
-            <div style="background-color: #f9fafb; padding: 20px; border-bottom: 1px solid #e5e7eb; display: flex; flex-direction: column; gap: 10px;">
-                <div style="font-size: 15px; color: #374151;"><b style="color: #4F46E5;">👤 שם המשתמש:</b> """ + display_name + """</div>
-                <div style="font-size: 15px; color: #374151;"><b style="color: #4F46E5;">📞 מספר טלפון:</b> """ + caller_id + """</div>
-                <div style="font-size: 15px; color: #374151;"><b style="color: #4F46E5;">📅 תאריך וסנכרון:</b> """ + time.strftime('%d/%m/%Y | %H:%M') + """</div>
+            <div style="background-color: #f9fafb; padding: 20px; border-bottom: 1px solid #e5e7eb; font-size: 15px; color: #374151; line-height: 1.6; text-align: right;">
+                <div style="margin-bottom: 6px;"><b style="color: #4F46E5;">👤 שם המשתמש:</b> """ + display_name + """</div>
+                <div style="margin-bottom: 6px;"><b style="color: #4F46E5;">📞 מספר טלפון:</b> """ + caller_id + """</div>
+                <div><b style="color: #4F46E5;">📅 תאריך וסנכרון:</b> """ + time.strftime('%d/%m/%Y | %H:%M') + """</div>
             </div>
             
-            <div style="padding: 24px; background-color: #ffffff;">
-                <h3 style="margin-top: 0; margin-bottom: 20px; color: #1f2937; border-bottom: 2px solid #f3f4f6; padding-bottom: 8px; font-size: 16px;">💬 ציר זמן של השיחה:</h3>
-                <div style="display: flex; flex-direction: column; gap: 16px;">
+            <div style="padding: 24px;">
+                <h3 style="margin-top: 0; margin-bottom: 20px; color: #1f2937; border-bottom: 2px solid #f3f4f6; padding-bottom: 8px; font-size: 16px; text-align: right;">💬 ציר זמן של השיחה:</h3>
+                <div>
         """
         
-        # לולאה על ההודעות ובניית בועות שיחה מעוצבות
+        # לולאה על ההודעות - מבנה בלוקים יציב שמונע קריסה של העימוד
         for msg in history:
             if msg['role'] == 'user':
+                # בועת המשתמש - מיושרת לימין, צבע אפור
                 body += f"""
-                <div style="align-self: flex-start; background-color: #f3f4f6; border-right: 4px solid #9ca3af; padding: 12px 16px; border-radius: 8px; max-width: 85%; margin-bottom: 12px;">
+                <div style="background-color: #f3f4f6; border-right: 4px solid #9ca3af; padding: 12px 16px; border-radius: 8px; margin-bottom: 15px; text-align: right; width: 90%; float: right; clear: both;">
                     <span style="font-size: 11px; font-weight: bold; color: #6b7280; display: block; margin-bottom: 4px;">👤 המשתמש אמר:</span>
-                    <span style="font-size: 14.5px; color: #1f2937; line-height: 1.5;">{msg['content']}</span>
+                    <span style="font-size: 14.5px; color: #1f2937; line-height: 1.5; display: block;">{msg['content']}</span>
                 </div>
                 """
             else:
+                # בועת ה-AI נועם - מיושרת לשמאל, צבע כחול/אינדיגו עדין
                 body += f"""
-                <div style="align-self: flex-start; background-color: #EEF2FF; border-right: 4px solid #6366F1; padding: 12px 16px; border-radius: 8px; max-width: 85%; margin-bottom: 12px; margin-right: auto; margin-left: 0;">
+                <div style="background-color: #EEF2FF; border-left: 4px solid #6366F1; padding: 12px 16px; border-radius: 8px; margin-bottom: 15px; text-align: right; width: 90%; float: left; clear: both;">
                     <span style="font-size: 11px; font-weight: bold; color: #4f46e5; display: block; margin-bottom: 4px;">🤖 נועם (AI) ענה:</span>
-                    <span style="font-size: 14.5px; color: #312e81; line-height: 1.5; font-style: italic;">{msg['content']}</span>
+                    <span style="font-size: 14.5px; color: #312e81; line-height: 1.5; font-style: italic; display: block;">{msg['content']}</span>
                 </div>
                 """
 
         body += """
+                    <div style="clear: both;"></div>
                 </div>
             </div>
             
-            <div style="background-color: #f3f4f6; padding: 15px; text-align: center; font-size: 12px; color: #9ca3af; border-top: 1px solid #e5e7eb;">
+            <div style="background-color: #f3f4f6; padding: 15px; text-align: center; font-size: 12px; color: #9ca3af; border-top: 1px solid #e5e7eb; margin-top: 20px;">
                 הודעה זו נוצרה באופן אוטומטי על ידי הבוט של נועם. נא לא להשיב למייל זה.
             </div>
         </div>
@@ -242,17 +245,23 @@ def ai_chat():
             tmp_filename = tmp_file.name
 
         # =========================
-        # WHISPER
+        # WHISPER (גרסה חסינת הזיות)
         # =========================
         with open(tmp_filename, "rb") as file:
             transcription = client.audio.transcriptions.create(
                 file=file,
                 model="whisper-large-v3",
                 language="he",
-                prompt="קוראים לי, איך קוראים לי, שלום, נועם, מה השעה, מה התאריך"
+                temperature=0.0,  # מכריח דיוק קיצוני ומונע המצאת סיפורים
+                prompt="שלום, נועם, מה קורה, מה השעה, כן, לא, תודה. שיחת טלפון קצרה."
             )
 
         user_text = transcription.text.strip()
+        
+        # ניקוי ביטויים קבועים של כתוביות (תקלה מוכרת בוויספר)
+        if any(bad_phrase in user_text for bad_phrase in ["המשך יבוא", "צפייה מהנה", "תורגם על ידי"]):
+            user_text = ""
+            
         print(f"User said: {user_text}")
 
         if not user_text:
