@@ -3,10 +3,10 @@ import time
 import tempfile
 import requests
 import re
+import azure.cognitiveservices.speech as speechsdk
 
 from flask import Flask, request, Response
 from groq import Groq
-from gtts import gTTS
 
 app = Flask(__name__)
 
@@ -69,7 +69,7 @@ def quick_answer(user_text):
 
 
 # =========================
-# TTS (gTTS - חינמי ויציב)
+# AZURE TTS
 # =========================
 def generate_tts(text):
 
@@ -78,10 +78,41 @@ def generate_tts(text):
         delete=False
     )
 
-    tts = gTTS(text=text, lang="he")
-    tts.save(output_file.name)
+    speech_config = speechsdk.SpeechConfig(
+        subscription=os.environ.get("AZURE_SPEECH_KEY"),
+        region=os.environ.get("AZURE_REGION")
+    )
+
+    speech_config.speech_synthesis_voice_name = "he-IL-HilaNeural"
+
+    audio_config = speechsdk.audio.AudioOutputConfig(
+        filename=output_file.name
+    )
+
+    synthesizer = speechsdk.SpeechSynthesizer(
+        speech_config=speech_config,
+        audio_config=audio_config
+    )
+
+    result = synthesizer.speak_text_async(text).get()
+
+    if result.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
+        raise Exception("TTS failed")
 
     return output_file.name
+
+
+# =========================
+# TRY TTS (SAFE)
+# =========================
+def try_tts(text):
+
+    try:
+        file_path = generate_tts(text)
+        return file_path, True
+    except Exception as e:
+        print("TTS ERROR:", e)
+        return None, False
 
 
 # =========================
@@ -170,17 +201,26 @@ def ai_chat():
 
             clean_reply = clean_text(fast_reply)
 
-            tts_file = generate_tts(clean_reply)
-            filename = f"quick_{int(time.time())}.mp3"
+            tts_file, ok = try_tts(clean_reply)
 
-            uploaded = upload_to_yemot(tts_file, filename)
+            if ok:
 
-            os.remove(tts_file)
+                filename = f"quick_{int(time.time())}.mp3"
+                uploaded = upload_to_yemot(tts_file, filename)
 
-            return Response(
-                f"id_list_message={uploaded}={RECORD_COMMAND}",
-                mimetype='text/plain'
-            )
+                os.remove(tts_file)
+
+                return Response(
+                    f"id_list_message={uploaded}={RECORD_COMMAND}",
+                    mimetype='text/plain'
+                )
+
+            else:
+
+                return Response(
+                    f"read=t-{clean_reply}={RECORD_COMMAND}",
+                    mimetype='text/plain'
+                )
 
         caller_id = request.values.get('ApiPhone', 'unknown')
 
@@ -196,19 +236,6 @@ def ai_chat():
                 pass
 
         known_name = caller_names.get(caller_id)
-
-        if "איך קוראים לי" in user_text:
-
-            if known_name:
-                return Response(
-                    f"read=t-קוראים לך {known_name}={RECORD_COMMAND}",
-                    mimetype='text/plain'
-                )
-            else:
-                return Response(
-                    f"read=t-עדיין לא אמרת לי איך קוראים לך={RECORD_COMMAND}",
-                    mimetype='text/plain'
-                )
 
         system_prompt = "אתה עוזר קולי בשם נועם ענה בעברית קצרה וברורה"
 
@@ -241,19 +268,26 @@ def ai_chat():
 
         clean_reply = clean_text(ai_reply)
 
-        tts_file = generate_tts(clean_reply)
+        tts_file, ok = try_tts(clean_reply)
 
-        filename = f"{caller_id}_{int(time.time())}.mp3"
-        uploaded = upload_to_yemot(tts_file, filename)
+        if ok:
 
-        os.remove(tts_file)
+            filename = f"{caller_id}_{int(time.time())}.mp3"
+            uploaded = upload_to_yemot(tts_file, filename)
 
-        print(f"Response time: {time.time() - start_time:.2f}s")
+            os.remove(tts_file)
 
-        return Response(
-            f"id_list_message={uploaded}={RECORD_COMMAND}",
-            mimetype='text/plain'
-        )
+            return Response(
+                f"id_list_message={uploaded}={RECORD_COMMAND}",
+                mimetype='text/plain'
+            )
+
+        else:
+
+            return Response(
+                f"read=t-{clean_reply}={RECORD_COMMAND}",
+                mimetype='text/plain'
+            )
 
     except Exception as e:
 
