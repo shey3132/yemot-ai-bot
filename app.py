@@ -57,7 +57,7 @@ def ai_chat():
             try:
                 # שימוש במודל ה-Lite החסכוני במכסות
                 response = client.models.generate_content(
-                    model='gemini-2.0-flash-lite',
+                    model='gemini-1.5-flash-8b',
                     contents=[
                         "אתה עוזר קולי חכם בטלפון. ענה בקיצור נמרץ מאוד (עד 2 משפטים). אל תשתמש בשום סימני פיסוק - ללא פסיקים, ללא נקודות, וללא סימני שאלה. תן תשובה חלקה למנוע הקראה.",
                         audio_file
