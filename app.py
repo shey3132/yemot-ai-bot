@@ -117,7 +117,6 @@ def send_summary_email(caller_id, history, name):
         display_name = name if name else "משתמש לא ידוע"
         subject = f"📄 סיכום שיחה מנועם: {display_name} ({caller_id})"
         
-        # בניית עיצוב ה-HTML היוקרתי והיציב עבור Gmail (ללא פלקסבוקס שקורס)
         body = """
         <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; direction: rtl; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.05); background-color: #ffffff;">
             <div style="background: linear-gradient(135deg, #4F46E5, #3730A3); color: white; padding: 24px; text-align: center;">
@@ -136,10 +135,8 @@ def send_summary_email(caller_id, history, name):
                 <div>
         """
         
-        # לולאה על ההודעות - מבנה בלוקים יציב שמונע קריסה של העימוד
         for msg in history:
             if msg['role'] == 'user':
-                # בועת המשתמש - מיושרת לימין, צבע אפור
                 body += f"""
                 <div style="background-color: #f3f4f6; border-right: 4px solid #9ca3af; padding: 12px 16px; border-radius: 8px; margin-bottom: 15px; text-align: right; width: 90%; float: right; clear: both;">
                     <span style="font-size: 11px; font-weight: bold; color: #6b7280; display: block; margin-bottom: 4px;">👤 המשתמש אמר:</span>
@@ -147,7 +144,6 @@ def send_summary_email(caller_id, history, name):
                 </div>
                 """
             else:
-                # בועת ה-AI נועם - מיושרת לשמאל, צבע כחול/אינדיגו עדין
                 body += f"""
                 <div style="background-color: #EEF2FF; border-left: 4px solid #6366F1; padding: 12px 16px; border-radius: 8px; margin-bottom: 15px; text-align: right; width: 90%; float: left; clear: both;">
                     <span style="font-size: 11px; font-weight: bold; color: #4f46e5; display: block; margin-bottom: 4px;">🤖 נועם (AI) ענה:</span>
@@ -220,8 +216,10 @@ def ai_chat():
     audio_path = audio_list[-1] if audio_list else None
 
     if not audio_path:
+        # הודעת פתיחה משודרגת עם הנחיית מקש סולמית #
+        welcome_msg = "שלום וברכה הגעתם לנועם העוזר החכם של שי ניהול פרויקטים נשמח לשוחח איתכם בסיום הדיבור לחצו על מקש סולמית"
         return Response(
-            f"read=t-שלום וברכה הגעתם לנועם במה אפשר לעזור={RECORD_COMMAND}",
+            f"read=t-{welcome_msg}={RECORD_COMMAND}",
             mimetype='text/plain'
         )
 
@@ -252,13 +250,12 @@ def ai_chat():
                 file=file,
                 model="whisper-large-v3",
                 language="he",
-                temperature=0.0,  # מכריח דיוק קיצוני ומונע המצאת סיפורים
+                temperature=0.0,
                 prompt="שלום, נועם, מה קורה, מה השעה, כן, לא, תודה. שיחת טלפון קצרה."
             )
 
         user_text = transcription.text.strip()
         
-        # ניקוי ביטויים קבועים של כתוביות (תקלה מוכרת בוויספר)
         if any(bad_phrase in user_text for bad_phrase in ["המשך יבוא", "צפייה מהנה", "תורגם על ידי"]):
             user_text = ""
             
@@ -272,23 +269,29 @@ def ai_chat():
         # =========================
         fast_reply = quick_answer(user_text)
         if fast_reply:
-            return Response(f"read=t-{clean_text(fast_reply)}={RECORD_COMMAND}", mimetype='text/plain')
+            return Response(f"read=t-{clean_text(fast_reply)}={RECORD_COMMAND}", mimetype='text/plain' if fast_reply else 'text/plain')
 
         # =========================
-        # SAVE NAME
+        # EXTRACT & SAVE USER NAME
         # =========================
-        if "קוראים לי" in user_text:
-            try:
-                extracted_name = user_text.split("קוראים לי")[-1].strip()
-                if len(extracted_name) < 20:
-                    known_name = extracted_name
-            except:
-                pass
+        name_triggers = ["קוראים לי", "שמי הוא", "אני קוראים לי", "מדבר", "מדברת", "נעים מאוד אני", "זה אני"]
+        for trigger in name_triggers:
+            if trigger in user_text:
+                try:
+                    extracted_name = user_text.split(trigger)[-1].strip()
+                    extracted_name = re.sub(r'^(הוא|היא|שמי|חבר|כאן)\s+', '', extracted_name)
+                    extracted_name = extracted_name.replace(".", "").replace("?", "").strip()
+                    if 1 <= len(extracted_name.split()) <= 3 and len(extracted_name) < 20:
+                        known_name = extracted_name
+                        print(f"[NAME SYSTEM] Found user name: {known_name}")
+                        break
+                except:
+                    pass
 
         # =========================
         # WHAT IS MY NAME
         # =========================
-        if "איך קוראים לי" in user_text:
+        if "איך קוראים לי" in user_text or "אתה יודע מי אני" in user_text:
             if known_name:
                 return Response(f"read=t-קוראים לך {known_name}={RECORD_COMMAND}", mimetype='text/plain')
             return Response(f"read=t-עדיין לא אמרת לי איך קוראים לך={RECORD_COMMAND}", mimetype='text/plain')
@@ -297,12 +300,20 @@ def ai_chat():
         # SYSTEM PROMPT & AI CHAT
         # =========================
         system_prompt = (
-            "קוראים לך נועם. אתה עוזר קולי חכם ואנושי בטלפון. השם שלך הוא נועם. "
-            "אל תגיד שלמשתמש קוראים נועם. דבר טבעי וחברותי, ענה ברור ומדויק ללא סימני פיסוק. "
-            "שמור תשובות קצרות יחסית."
+            "קוראים לך נועם. אתה עוזר קולי חכם, אנושי ומתקדם בטלפון. "
+            "אתה פותחת ונבנית על ידי היוצר והמנהל שלך: שי, מומחה לניהול פרויקטים. "
+            "אם המשתמש שואל 'מי פיתח אותך', 'מי יצר אותך', 'מי הבעלים שלך' או שאלות דומות, "
+            "תענה בצורה מקצועית וברורה שאתה עוזר ה-AI האישי שפותח על ידי שי מניהול פרויקטים, "
+            "ושתפקידך לעזור בניהול המשימות, מתן מענה וייעול התהליכים עבורו. "
+            "חוק קשיח וחשוב ביותר: אם המשתמש עדיין לא הציג את עצמו (כלומר אתה לא יודע את השם שלו), "
+            "במשפט הראשון שאתה עונה לו כרגע בשיחה, אתה חייב לשאול אותו בצורה נעימה וחברותית מה השם שלו לצורך השיחה! "
+            "אתה יכול להרחיב בתשובות שלך, להסביר דברים לעומק ולנהל שיחה זורמת, מעניינת ומלאה – "
+            "אין צורך לענות בקצר, תן תשובות מלאות ומפורטות כשצריך. "
+            "אל תגיד בשום אופן שלמשתמש קוראים נועם. דבר בצורה טבעית, חברותית ומקצועית, "
+            "ענה ברור ומדויק ללא סימני פיסוק כלל (כדי שההקראה הטלפונית תישמע מעולה)."
         )
         if known_name:
-            system_prompt += f" השם של המשתמש הוא {known_name}."
+            system_prompt += f" השם של המשתמש שמדבר איתך כרגע הוא {known_name}."
 
         history.append({"role": "user", "content": user_text})
 
@@ -310,7 +321,7 @@ def ai_chat():
             model="llama-3.3-70b-versatile",
             messages=[{"role": "system", "content": system_prompt}] + history[-6:],
             temperature=0.8,
-            max_tokens=120
+            max_tokens=300 
         )
 
         ai_reply = chat.choices[0].message.content.strip()
