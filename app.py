@@ -20,7 +20,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 # הגדרות המעקף של גוגל
 GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL")  # הכתובת שקיבלת מגוגל סקריפט
-TARGET_EMAIL = os.environ.get("TARGET_EMAIL")  # המייל הפרטי שלך לקבלת הסיכון
+TARGET_EMAIL = os.environ.get("TARGET_EMAIL")  # המייל הפרטי שלך לקבלת הסיכום
 
 client = Groq(api_key=GROQ_API_KEY)
 
@@ -117,7 +117,7 @@ def send_summary_email(caller_id, history, name):
         display_name = name if name else "משתמש לא ידוע"
         subject = f"📄 סיכום שיחה מנועם: {display_name} ({caller_id})"
         
-        # בניית עיצוב ה-HTML היוקרתי (CSS מובנה המותאם למייל)
+        # בניית עיצוב ה-HTML היוקרתי
         body = """
         <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; direction: rtl; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
             <div style="background: linear-gradient(135deg, #4F46E5, #3730A3); color: white; padding: 24px; text-align: center;">
@@ -139,7 +139,6 @@ def send_summary_email(caller_id, history, name):
         # לולאה על ההודעות ובניית בועות שיחה מעוצבות
         for msg in history:
             if msg['role'] == 'user':
-                # בועת המשתמש (צבע אפור-כחלחל עדין, מיושר לימין)
                 body += f"""
                 <div style="align-self: flex-start; background-color: #f3f4f6; border-right: 4px solid #9ca3af; padding: 12px 16px; border-radius: 8px; max-width: 85%; margin-bottom: 12px;">
                     <span style="font-size: 11px; font-weight: bold; color: #6b7280; display: block; margin-bottom: 4px;">👤 המשתמש אמר:</span>
@@ -147,7 +146,6 @@ def send_summary_email(caller_id, history, name):
                 </div>
                 """
             else:
-                # בועת ה-AI נועם (צבע אינדיגו בהיר, מיושר לשמאל)
                 body += f"""
                 <div style="align-self: flex-start; background-color: #EEF2FF; border-right: 4px solid #6366F1; padding: 12px 16px; border-radius: 8px; max-width: 85%; margin-bottom: 12px; margin-right: auto; margin-left: 0;">
                     <span style="font-size: 11px; font-weight: bold; color: #4f46e5; display: block; margin-bottom: 4px;">🤖 נועם (AI) ענה:</span>
@@ -155,7 +153,6 @@ def send_summary_email(caller_id, history, name):
                 </div>
                 """
 
-        # סגירת הדיבים ותחתית המייל
         body += """
                 </div>
             </div>
@@ -265,4 +262,66 @@ def ai_chat():
         # QUICK ANSWERS
         # =========================
         fast_reply = quick_answer(user_text)
-        if fast
+        if fast_reply:
+            return Response(f"read=t-{clean_text(fast_reply)}={RECORD_COMMAND}", mimetype='text/plain')
+
+        # =========================
+        # SAVE NAME
+        # =========================
+        if "קוראים לי" in user_text:
+            try:
+                extracted_name = user_text.split("קוראים לי")[-1].strip()
+                if len(extracted_name) < 20:
+                    known_name = extracted_name
+            except:
+                pass
+
+        # =========================
+        # WHAT IS MY NAME
+        # =========================
+        if "איך קוראים לי" in user_text:
+            if known_name:
+                return Response(f"read=t-קוראים לך {known_name}={RECORD_COMMAND}", mimetype='text/plain')
+            return Response(f"read=t-עדיין לא אמרת לי איך קוראים לך={RECORD_COMMAND}", mimetype='text/plain')
+
+        # =========================
+        # SYSTEM PROMPT & AI CHAT
+        # =========================
+        system_prompt = (
+            "קוראים לך נועם. אתה עוזר קולי חכם ואנושי בטלפון. השם שלך הוא נועם. "
+            "אל תגיד שלמשתמש קוראים נועם. דבר טבעי וחברותי, ענה ברור ומדויק ללא סימני פיסוק. "
+            "שמור תשובות קצרות יחסית."
+        )
+        if known_name:
+            system_prompt += f" השם של המשתמש הוא {known_name}."
+
+        history.append({"role": "user", "content": user_text})
+
+        chat = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "system", "content": system_prompt}] + history[-6:],
+            temperature=0.8,
+            max_tokens=120
+        )
+
+        ai_reply = chat.choices[0].message.content.strip()
+        history.append({"role": "assistant", "content": ai_reply})
+
+        save_chat_data(caller_id, history, known_name)
+
+        clean_reply = clean_text(ai_reply)
+        print(f"AI reply: {clean_reply}")
+        print(f"Response time: {time.time() - start_time:.2f} seconds")
+
+        return Response(f"read=t-{clean_reply}={RECORD_COMMAND}", mimetype='text/plain')
+
+    except Exception as e:
+        print(f"ERROR: {e}")
+        return Response(f"read=t-נועם עמוס כרגע אנא נסו שוב בעוד כמה שניות={RECORD_COMMAND}", mimetype='text/plain')
+
+    finally:
+        if tmp_filename and os.path.exists(tmp_filename):
+            os.remove(tmp_filename)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
