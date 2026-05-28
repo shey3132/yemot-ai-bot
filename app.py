@@ -106,7 +106,7 @@ def quick_answer(user_text):
     return None
 
 # =========================
-# SEND EMAIL VIA GOOGLE BYPASS (FIXED GMAIL HTML)
+# SEND EMAIL VIA GOOGLE BYPASS
 # =========================
 def send_summary_email(caller_id, history, name):
     if not GOOGLE_SCRIPT_URL or not TARGET_EMAIL:
@@ -216,7 +216,7 @@ def ai_chat():
     audio_path = audio_list[-1] if audio_list else None
 
     if not audio_path:
-        # הודעת פתיחה משודרגת עם הנחיית מקש סולמית #
+        # הודעת פתיחה משודרגת וקצרה
         welcome_msg = "שלום וברכה הגעתם לנועם העוזר החכם של שי ניהול פרויקטים נשמח לשוחח איתכם בסיום הדיבור לחצו על מקש סולמית"
         return Response(
             f"read=t-{welcome_msg}={RECORD_COMMAND}",
@@ -243,7 +243,7 @@ def ai_chat():
             tmp_filename = tmp_file.name
 
         # =========================
-        # WHISPER (גרסה חסינת הזיות)
+        # WHISPER (פרומפט מועשר בשמות עבריים)
         # =========================
         with open(tmp_filename, "rb") as file:
             transcription = client.audio.transcriptions.create(
@@ -251,7 +251,7 @@ def ai_chat():
                 model="whisper-large-v3",
                 language="he",
                 temperature=0.0,
-                prompt="שלום, נועם, מה קורה, מה השעה, כן, לא, תודה. שיחת טלפון קצרה."
+                prompt="ישעיהו, משה, אברהם, יעקב, שי, נועם, שלום, קוראים לי, שמי הוא, כן, לא"
             )
 
         user_text = transcription.text.strip()
@@ -269,12 +269,12 @@ def ai_chat():
         # =========================
         fast_reply = quick_answer(user_text)
         if fast_reply:
-            return Response(f"read=t-{clean_text(fast_reply)}={RECORD_COMMAND}", mimetype='text/plain' if fast_reply else 'text/plain')
+            return Response(f"read=t-{clean_text(fast_reply)}={RECORD_COMMAND}", mimetype='text/plain')
 
         # =========================
         # EXTRACT & SAVE USER NAME
         # =========================
-        name_triggers = ["קוראים לי", "שמי הוא", "אני קוראים לי", "מדבר", "מדברת", "נעים מאוד אני", "זה אני"]
+        name_triggers = ["קוראים לי", "שמי הוא", "אני קוראים לי", "מדבר", "מדברת", "נעים מאוד אני", "זה אני", "אני "]
         for trigger in name_triggers:
             if trigger in user_text:
                 try:
@@ -297,20 +297,16 @@ def ai_chat():
             return Response(f"read=t-עדיין לא אמרת לי איך קוראים לך={RECORD_COMMAND}", mimetype='text/plain')
 
         # =========================
-        # SYSTEM PROMPT & AI CHAT
+        # SYSTEM PROMPT & AI CHAT (מרוסן ומתומצת)
         # =========================
         system_prompt = (
-            "קוראים לך נועם. אתה עוזר קולי חכם, אנושי ומתקדם בטלפון. "
-            "אתה פותחת ונבנית על ידי היוצר והמנהל שלך: שי, מומחה לניהול פרויקטים. "
-            "אם המשתמש שואל 'מי פיתח אותך', 'מי יצר אותך', 'מי הבעלים שלך' או שאלות דומות, "
-            "תענה בצורה מקצועית וברורה שאתה עוזר ה-AI האישי שפותח על ידי שי מניהול פרויקטים, "
-            "ושתפקידך לעזור בניהול המשימות, מתן מענה וייעול התהליכים עבורו. "
-            "חוק קשיח וחשוב ביותר: אם המשתמש עדיין לא הציג את עצמו (כלומר אתה לא יודע את השם שלו), "
-            "במשפט הראשון שאתה עונה לו כרגע בשיחה, אתה חייב לשאול אותו בצורה נעימה וחברותית מה השם שלו לצורך השיחה! "
-            "אתה יכול להרחיב בתשובות שלך, להסביר דברים לעומק ולנהל שיחה זורמת, מעניינת ומלאה – "
-            "אין צורך לענות בקצר, תן תשובות מלאות ומפורטות כשצריך. "
-            "אל תגיד בשום אופן שלמשתמש קוראים נועם. דבר בצורה טבעית, חברותית ומקצועית, "
-            "ענה ברור ומדויק ללא סימני פיסוק כלל (כדי שההקראה הטלפונית תישמע מעולה)."
+            "קוראים לך נועם. אתה עוזר קולי חכם, אנושי וקולע בטלפון. "
+            "אתה פותחת ונבנית על ידי היוצר והמנהל שלך: שי מניהול פרויקטים. "
+            "חוקים קשיחים לאישיות שלך:\n"
+            "1. ענה תמיד לעניין ובקצר יחסית (משפט אחד או שניים בלבד). אל תנאם נאומים ארוכים!\n"
+            "2. אם המשתמש שואל מי פיתח אותך, תגיד בקצרה ששי מניהול פרויקטים פיתח אותך. אל תחזור על המשפט הזה באף תשובה אחרת סתם כך!\n"
+            "3. אם אתה לא יודע את שם המשתמש, שאל אותו במשפט הראשון בצורה פשוטה: 'נעים מאוד, עם מי יש לי העונג לשוחח?' או 'מה שמך לצורך השיחה?'.\n"
+            "4. דבר בצורה טבעית וחברותית, אל תשתמש בסימני פיסוק בכלל כדי שההקראה הטלפונית תישמע מצוין, ותמיד תסיים בשאלה קצרה שמזמינה את המשתמש להמשיך."
         )
         if known_name:
             system_prompt += f" השם של המשתמש שמדבר איתך כרגע הוא {known_name}."
@@ -320,8 +316,8 @@ def ai_chat():
         chat = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "system", "content": system_prompt}] + history[-6:],
-            temperature=0.8,
-            max_tokens=300 
+            temperature=0.6, # הורדנו טמפרטורה כדי שיהיה ממוקד וישר לעניין
+            max_tokens=150   # הגבלנו ל-150 טוקנים כדי שהתשובות לא יהיו ארוכות ומייגעות
         )
 
         ai_reply = chat.choices[0].message.content.strip()
