@@ -30,7 +30,7 @@ def ai_chat():
             mimetype='text/plain'
         )
 
-    print(f"Processing latest audio file using Gemini 2.0 Flash-Lite: {audio_path}")
+    print(f"Processing latest audio file using Gemini 1.5 Flash: {audio_path}")
 
     # שלב ב': הורדת הקובץ מימות המשיח
     yemot_path = f"ivr2:{audio_path}"
@@ -46,7 +46,7 @@ def ai_chat():
         print(f"Error downloading audio: {e}")
         return Response(f"read=t-חלה שגיאה בקבלת השמע אנא נסו שוב={RECORD_COMMAND}", mimetype='text/plain')
 
-    # שלב ג': עיבוד ה-AI באמצעות מודל gemini-2.0-flash-lite (1500 בקשות ביום!)
+    # שלב ג': עיבוד ה-AI באמצעות מודל gemini-1.5-flash המרכזי
     try:
         audio_file = client.files.upload(file=tmp_filename)
         
@@ -55,9 +55,9 @@ def ai_chat():
         
         for attempt in range(max_retries):
             try:
-                # שימוש במודל ה-Lite החסכוני במכסות
+                # שימוש במודל היציב והבדוק ביותר
                 response = client.models.generate_content(
-                    model='gemini-1.5-flash-8b',
+                    model='gemini-1.5-flash',
                     contents=[
                         "אתה עוזר קולי חכם בטלפון. ענה בקיצור נמרץ מאוד (עד 2 משפטים). אל תשתמש בשום סימני פיסוק - ללא פסיקים, ללא נקודות, וללא סימני שאלה. תן תשובה חלקה למנוע הקראה.",
                         audio_file
@@ -73,7 +73,7 @@ def ai_chat():
                 print(f"Google API attempt {attempt + 1} failed: {e}")
                 
                 if "RESOURCE_EXHAUSTED" in error_str or "429" in error_str:
-                    print("Quota hit (429) on Gemini 2.0 Lite. Breaking retry loop.")
+                    print("Quota hit (429) on Gemini 1.5 Flash. Breaking retry loop.")
                     break
                 
                 if attempt < max_retries - 1:
