@@ -17,20 +17,23 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 client = Groq(api_key=GROQ_API_KEY)
 
-RECORD_COMMAND = "user_audio,no,record,,,yes,yes,no,1,60"
+# =========================
+# RECORD SETTINGS
+# =========================
+RECORD_COMMAND = "user_audio,no,record,,,yes,yes,no,1,20"
 
 # =========================
-# זיכרון קצר
+# MEMORY
 # =========================
 conversation_memory = {}
 
 # =========================
-# שמות מתקשרים
+# CALLER NAMES
 # =========================
 caller_names = {}
 
 # =========================
-# ניקוי טקסט
+# CLEAN TEXT
 # =========================
 def clean_text(text):
 
@@ -54,8 +57,7 @@ def clean_text(text):
 
 
 # =========================
-# תשובות מהירות
-# חוסך טוקנים
+# QUICK ANSWERS
 # =========================
 def quick_answer(user_text):
 
@@ -65,10 +67,6 @@ def quick_answer(user_text):
         current_time = time.strftime("%H:%M")
         return f"השעה עכשיו {current_time}"
 
-    if "איזה יום היום" in text:
-        current_day = time.strftime("%A")
-        return f"היום {current_day}"
-
     if "מה התאריך" in text:
         current_date = time.strftime("%d/%m/%Y")
         return f"התאריך היום {current_date}"
@@ -76,20 +74,31 @@ def quick_answer(user_text):
     return None
 
 
+# =========================
+# MAIN ROUTE
+# =========================
 @app.route('/ai-chat', methods=['GET', 'POST'])
 def ai_chat():
 
     start_time = time.time()
 
-    # ניתוק
+    # =========================
+    # HANGUP
+    # =========================
     if request.values.get('hangup') == 'yes':
         return Response("noop", mimetype='text/plain')
 
+    # =========================
+    # GET AUDIO
+    # =========================
     audio_list = request.values.getlist('user_audio')
     audio_path = audio_list[-1] if audio_list else None
 
-    # התחלת שיחה
+    # =========================
+    # START CALL
+    # =========================
     if not audio_path:
+
         return Response(
             f"read=t-שלום וברכה הגעתם לנועם במה אפשר לעזור={RECORD_COMMAND}",
             mimetype='text/plain'
@@ -97,6 +106,9 @@ def ai_chat():
 
     print(f"Processing audio: {audio_path}")
 
+    # =========================
+    # DOWNLOAD AUDIO
+    # =========================
     yemot_path = f"ivr2:{audio_path}"
 
     params = {
@@ -108,9 +120,6 @@ def ai_chat():
 
     try:
 
-        # =========================
-        # הורדת ההקלטה
-        # =========================
         audio_response = requests.get(
             "https://www.call2all.co.il/ym/api/DownloadFile",
             params=params,
@@ -119,18 +128,24 @@ def ai_chat():
 
         audio_response.raise_for_status()
 
+        # קובץ קטן מדי
         if len(audio_response.content) < 1000:
+
             return Response(
                 f"read=t-לא שמעתי טוב אנא נסו שוב={RECORD_COMMAND}",
                 mimetype='text/plain'
             )
 
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
+        with tempfile.NamedTemporaryFile(
+            suffix=".wav",
+            delete=False
+        ) as tmp_file:
+
             tmp_file.write(audio_response.content)
             tmp_filename = tmp_file.name
 
         # =========================
-        # תמלול Whisper
+        # WHISPER
         # =========================
         with open(tmp_filename, "rb") as file:
 
@@ -144,14 +159,18 @@ def ai_chat():
 
         print(f"User said: {user_text}")
 
+        # =========================
+        # EMPTY TEXT
+        # =========================
         if not user_text:
+
             return Response(
                 f"read=t-לא שמעתי כלום אנא נסו שוב={RECORD_COMMAND}",
                 mimetype='text/plain'
             )
 
         # =========================
-        # תשובות מהירות
+        # QUICK ANSWERS
         # =========================
         fast_reply = quick_answer(user_text)
 
@@ -159,15 +178,13 @@ def ai_chat():
 
             clean_reply = clean_text(fast_reply)
 
-            print("Quick answer used")
-
             return Response(
                 f"read=t-{clean_reply}={RECORD_COMMAND}",
                 mimetype='text/plain'
             )
 
         # =========================
-        # זיהוי מתקשר
+        # CALLER ID
         # =========================
         caller_id = request.values.get('ApiPhone', 'unknown')
 
@@ -175,11 +192,12 @@ def ai_chat():
             conversation_memory[caller_id] = []
 
         # =========================
-        # שמירת שם משתמש
+        # SAVE NAME
         # =========================
         if "קוראים לי" in user_text:
 
             try:
+
                 extracted_name = user_text.split("קוראים לי")[-1].strip()
 
                 if len(extracted_name) < 20:
@@ -191,11 +209,32 @@ def ai_chat():
         known_name = caller_names.get(caller_id)
 
         # =========================
-        # פרומפט חכם
+        # WHAT IS MY NAME
+        # =========================
+        if "איך קוראים לי" in user_text:
+
+            if known_name:
+
+                return Response(
+                    f"read=t-קוראים לך {known_name}={RECORD_COMMAND}",
+                    mimetype='text/plain'
+                )
+
+            else:
+
+                return Response(
+                    f"read=t-עדיין לא אמרת לי איך קוראים לך={RECORD_COMMAND}",
+                    mimetype='text/plain'
+                )
+
+        # =========================
+        # SYSTEM PROMPT
         # =========================
         system_prompt = (
             "קוראים לך נועם "
             "אתה עוזר קולי חכם ואנושי בטלפון "
+            "השם שלך הוא נועם "
+            "אל תגיד שלמשתמש קוראים נועם "
             "דבר טבעי וחברותי "
             "ענה ברור ומדויק "
             "אל תשתמש בסימני פיסוק "
@@ -209,7 +248,7 @@ def ai_chat():
             system_prompt += f"השם של המשתמש הוא {known_name} "
 
         # =========================
-        # זיכרון שיחה
+        # MEMORY
         # =========================
         conversation_memory[caller_id].append({
             "role": "user",
@@ -220,7 +259,7 @@ def ai_chat():
         conversation_memory[caller_id] = conversation_memory[caller_id][-6:]
 
         # =========================
-        # AI
+        # AI CHAT
         # =========================
         chat = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -237,7 +276,7 @@ def ai_chat():
         ai_reply = chat.choices[0].message.content.strip()
 
         # =========================
-        # שמירת תשובת הבוט
+        # SAVE AI MEMORY
         # =========================
         conversation_memory[caller_id].append({
             "role": "assistant",
@@ -246,14 +285,20 @@ def ai_chat():
 
         conversation_memory[caller_id] = conversation_memory[caller_id][-6:]
 
+        # =========================
+        # CLEAN
+        # =========================
         clean_reply = clean_text(ai_reply)
 
         print(f"AI reply: {clean_reply}")
 
-        print(f"Response time: {time.time() - start_time:.2f} seconds")
+        print(
+            f"Response time: "
+            f"{time.time() - start_time:.2f} seconds"
+        )
 
         # =========================
-        # תשובה לימות
+        # RETURN TO YEMOT
         # =========================
         return Response(
             f"read=t-{clean_reply}={RECORD_COMMAND}",
@@ -271,10 +316,13 @@ def ai_chat():
 
     finally:
 
-        # ניקוי קובץ זמני
+        # DELETE TEMP FILE
         if tmp_filename and os.path.exists(tmp_filename):
             os.remove(tmp_filename)
 
 
+# =========================
+# RUN
+# =========================
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
