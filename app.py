@@ -11,35 +11,36 @@ app = Flask(__name__)
 YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# אתחול הלקוח הרשמי והחדש של גוגל
+# אתחול הלקוח הרשמי של גוגל (SDK החדש)
 client = genai.Client(api_key=GEMINI_API_KEY)
+
+# מחרוזת ה-read המדויקת לפי 10 הפרמטרים של התיעוד
+# 1. user_audio | 2. no | 3. record | 4. [Path ריק] | 5. [FileName ריק] | 6. yes (NoMenu) | 7. yes (SaveHangup) | 8. no (Append) | 9. 1 (MinLen) | 10. 60 (MaxLen)
+RECORD_COMMAND = "user_audio,no,record,,,yes,yes,no,1,60"
 
 @app.route('/ai-chat', methods=['GET', 'POST'])
 def ai_chat():
     data = request.form if request.method == 'POST' else request.args
     
-    # הגנה מפני בקשות ניתוק (למניעת לולאות שרת מיותרות)
+    # חסימת בקשות ניתוק כדי למנוע לולאות שרת מיותרות
     if data.get('hangup') == 'yes':
         return Response("noop", mimetype='text/plain')
 
-    # קריאת הפרמטר המקורי שלך
+    # קריאת הפרמטר שבו ימות המשיח מחזירה את נתיב הקובץ
     audio_path = data.get('user_audio')
 
-    # פנייה ראשונית - החזרת מחרוזת ה-read המקורית והמדויקת שלך שעבדה!
+    # פנייה ראשונית (תחילת השיחה) - המאזין רק נכנס לשלוחה
     if not audio_path:
         return Response(
-            "read=t-שלום, אני מאזין. במה אוכל לעזור?=user_audio,no,record,,,,,15,,", 
+            f"read=t-שלום, אני מאזין. במה אוכל לעזור?={RECORD_COMMAND}", 
             mimetype='text/plain'
         )
 
-    # --- טיפול מדויק בנתיב הקובץ לפי ההנחיות שלך ---
-    # מוודאים שיש סלאש מוביל לפני נתיב הקובץ (למשל: /1/079.wav)
-    clean_path = audio_path if audio_path.startswith('/') else '/' + audio_path
-    # מוסיפים את הקידומת ivr2: כנדרש
-    yemot_path = f"ivr2:{clean_path}"
+    # הוספת הקידומת ivr2: לנתיב המתקבל (למשל /1/5/001.wav) כפי שציינת בתיעוד
+    yemot_path = f"ivr2:{audio_path}"
 
-    # הורדת קובץ השמע המוקלט
-    # הערה: ספריית requests משרשרת ומבצעת URL Encode אוטומטי ומלא לפרמטרים בתוך params
+    # הורדת קובץ השמע המוקלט משרתי ימות המשיח
+    # (requests מבצעת URL Encode אוטומטי לפרמטרים בתוך params)
     params = {"token": YEMOT_TOKEN, "path": yemot_path}
     try:
         audio_response = requests.get("https://www.call2all.co.il/ym/api/DownloadFile", params=params)
@@ -50,13 +51,13 @@ def ai_chat():
             tmp_filename = tmp_file.name
     except Exception as e:
         print(f"Error downloading audio: {e}")
-        return Response("read=t-חלה שגיאה זמנית בהורדת השמע. נסה שוב.=user_audio,no,record,,,,,15,,", mimetype='text/plain')
+        return Response(f"read=t-חלה שגיאה בקבלת השמע. אנא נסו שוב.={RECORD_COMMAND}", mimetype='text/plain')
 
     try:
-        # העלאת הקובץ לשרתי גוגל
+        # העלאת הקובץ הזמני לשרתי ה-File API של גוגל
         audio_file = client.files.upload(file=tmp_filename)
         
-        # קריאה למודל gemini-2.5-flash עם מנוע החיפוש המובנה של גוגל
+        # קריאה למודל gemini-2.5-flash המהיר עם מנוע החיפוש בזמן אמת
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=[
@@ -69,23 +70,23 @@ def ai_chat():
         )
         ai_reply = response.text or "לא הצלחתי לעבד את התשובה, אנא נסה שוב."
         
-        # ניקוי מחמיר של תווים שמורים כדי שלא ישבשו את הפארסר של ימות המשיח
+        # ניקוי תווים מיוחדים כדי לא לשבש את הפארסר של ימות המשיח
         clean_reply = ai_reply.replace("**", "").replace("*", "").replace("#", "")
         clean_reply = clean_reply.replace("&", " ו- ").replace("=", " פירושו ")
         clean_reply = " ".join(clean_reply.split())
         
-        # החזרת התשובה והמשך לולאת ההקלטה באותו פורמט בדיוק
+        # החזרת תשובת ה-AI והמשך לולאת ההקלטה הבאה באותו פורמט בדיוק
         return Response(
-            f"read=t-{clean_reply}=user_audio,no,record,,,,,15,,", 
+            f"read=t-{clean_reply}={RECORD_COMMAND}", 
             mimetype='text/plain'
         )
 
     except Exception as e:
         print(f"Error during AI processing: {e}")
-        return Response("read=t-מתנצל, קרתה תקלה בעיבוד הנתונים. נסה שוב.=user_audio,no,record,,,,,15,,", mimetype='text/plain')
+        return Response(f"read=t-אני מתנצל, קרתה תקלה בעיבוד הנתונים. נסה שוב.={RECORD_COMMAND}", mimetype='text/plain')
     
     finally:
-        # ניקוי קבצים מקומיים ומשרתי גוגל למניעת עומס בשטח הדיסק
+        # ניקוי יסודי של קבצים מקומיים ובשרת גוגל כדי למנוע עומס
         if 'tmp_filename' in locals() and os.path.exists(tmp_filename): 
             os.remove(tmp_filename)
         if 'audio_file' in locals():
