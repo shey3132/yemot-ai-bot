@@ -10,11 +10,6 @@ import sqlite3
 from flask import Flask, request, Response
 from groq import Groq
 
-# ספריות מובנות לשליחת מייל
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-
 app = Flask(__name__)
 
 # =========================
@@ -23,12 +18,9 @@ app = Flask(__name__)
 YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-# הגדרות למייל - מעודכן לפורט 465 (SSL) לעקיפת חסימות רשת בשרתים
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 465
-EMAIL_ADDRESS = os.environ.get("EMAIL_ADDRESS")  # המייל של הבוט שממנו נשלח
-EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD")  # סיסמת האפליקציה בת 16 האותיות של גוגל
-TARGET_EMAIL = os.environ.get("TARGET_EMAIL")  # המייל הפרטי שלך שאליו תקבל את הסיכום
+# הגדרות המעקף של גוגל
+GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL")  # הכתובת שקיבלת מגוגל סקריפט
+TARGET_EMAIL = os.environ.get("TARGET_EMAIL")  # המייל הפרטי שלך לקבלת הסיכום
 
 client = Groq(api_key=GROQ_API_KEY)
 
@@ -43,7 +35,6 @@ RECORD_COMMAND = "user_audio,no,record,,,yes,yes,no,1,20"
 DB_FILE = "chat_memory.db"
 
 def init_db():
-    """יצירת הטבלאות בבסיס הנתונים במידה ואינן קיימות"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
@@ -56,18 +47,15 @@ def init_db():
     conn.commit()
     conn.close()
 
-# אתחול מסד הנתונים עם הפעלת השרת
 init_db()
 
 def get_chat_data(caller_id):
-    """שליפת היסטוריה ושם עבור מספר טלפון"""
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute("SELECT history, name FROM conversations WHERE caller_id = ?", (caller_id,))
         row = cursor.fetchone()
         conn.close()
-        
         if row and row[0]:
             return json.loads(row[0]), row[1]
     except Exception as e:
@@ -75,11 +63,10 @@ def get_chat_data(caller_id):
     return [], None
 
 def save_chat_data(caller_id, history, name):
-    """שמירת היסטוריה ושם לבסיס הנתונים"""
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        history_json = json.dumps(history[-6:])  # שומרים רק 6 הודעות אחרונות
+        history_json = json.dumps(history[-6:])
         cursor.execute('''
             INSERT INTO conversations (caller_id, history, name)
             VALUES (?, ?, ?)
@@ -91,7 +78,6 @@ def save_chat_data(caller_id, history, name):
         print(f"[DB ERROR] Failed to save data: {e}")
 
 def delete_chat_data(caller_id):
-    """מחיקת רשומה לאחר סיום השיחה"""
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
@@ -120,11 +106,11 @@ def quick_answer(user_text):
     return None
 
 # =========================
-# SEND EMAIL FUNCTION (SSL 465)
+# SEND EMAIL VIA GOOGLE BYPASS
 # =========================
 def send_summary_email(caller_id, history, name):
-    if not EMAIL_ADDRESS or not EMAIL_PASSWORD or not TARGET_EMAIL:
-        print("[EMAIL SYSTEM] ERROR: Email settings are missing in Render Environment Variables!")
+    if not GOOGLE_SCRIPT_URL or not TARGET_EMAIL:
+        print("[EMAIL SYSTEM] ERROR: GOOGLE_SCRIPT_URL or TARGET_EMAIL missing in Render Environment Variables!")
         return
 
     try:
@@ -141,29 +127,22 @@ def send_summary_email(caller_id, history, name):
             body += f"<li><b>{role_name}:</b> {msg['content']}</li>"
         body += "</ul>"
 
-        msg = MIMEMultipart()
-        msg['From'] = EMAIL_ADDRESS
-        msg['To'] = TARGET_EMAIL
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'html', 'utf-8'))
+        payload = {
+            "to": TARGET_EMAIL,
+            "subject": subject,
+            "htmlBody": body
+        }
 
-        # ננסה להתחבר בפורט 587 עם הגבלת זמן כדי למנוע קפיאה
-        print("[EMAIL SYSTEM] Trying to connect via Port 587 (Timeout=7)...")
-        server = smtplib.SMTP("smtp.gmail.com", 587, timeout=7)
-        server.ehlo()
-        server.starttls()  # שכבת האבטחה
-        server.ehlo()
+        print("[EMAIL SYSTEM] Sending email via Google Apps Script bypass...")
+        response = requests.post(GOOGLE_SCRIPT_URL, json=payload, timeout=12)
         
-        print("[EMAIL SYSTEM] Logging in...")
-        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-        
-        print("[EMAIL SYSTEM] Sending message...")
-        server.sendmail(EMAIL_ADDRESS, TARGET_EMAIL, msg.as_string())
-        server.quit()
-        print(f"[EMAIL SYSTEM] Email summary sent successfully for {caller_id}")
-        
+        if response.status_code == 200:
+            print(f"[EMAIL SYSTEM] Email summary sent successfully via Google Bypass for {caller_id}!")
+        else:
+            print(f"[EMAIL SYSTEM] Google Script returned error status: {response.status_code}")
+            
     except Exception as e:
-        print(f"[EMAIL SYSTEM] Error occurred: {e}")
+        print(f"[EMAIL SYSTEM] Failed to send email via Google Bypass: {e}")
 
 # =========================
 # MAIN ROUTE
@@ -173,7 +152,6 @@ def ai_chat():
     start_time = time.time()
     caller_id = request.values.get('ApiPhone', 'unknown')
     
-    # טעינת נתונים קיימים מהדאטה-בייס לחסינות מלאה מפני ריסטארטים של Render
     history, known_name = get_chat_data(caller_id)
 
     # =========================
@@ -188,13 +166,11 @@ def ai_chat():
             print("אזהרה: לא נמצאה היסטוריה בבסיס הנתונים עבור מספר זה. שולח מייל ריק.")
             history = [{"role": "user", "content": "לא נשמרה היסטוריה עבור שיחה זו"}]
             
-        # הרצת שליחת המייל ב-Thread נפרד כדי להחזיר תגובה מיידית לימות המשיח
         threading.Thread(
             target=send_summary_email, 
             args=(caller_id, history, known_name)
         ).start()
         
-        # מחיקת הרשומה כדי שהשיחה הבאה מאותו מספר תתחיל מחדש כדף חלק
         delete_chat_data(caller_id)
         return Response("noop", mimetype='text/plain')
 
@@ -204,7 +180,6 @@ def ai_chat():
     audio_list = request.values.getlist('user_audio')
     audio_path = audio_list[-1] if audio_list else None
 
-    # תחילת שיחה (הודעת פתיחה)
     if not audio_path:
         return Response(
             f"read=t-שלום וברכה הגעתם לנועם במה אפשר לעזור={RECORD_COMMAND}",
@@ -216,7 +191,6 @@ def ai_chat():
     tmp_filename = None
 
     try:
-        # הורדת קובץ השמע מימות המשיח
         audio_response = requests.get(
             "https://www.call2all.co.il/ym/api/DownloadFile",
             params={"token": YEMOT_TOKEN, "path": yemot_path},
@@ -232,7 +206,7 @@ def ai_chat():
             tmp_filename = tmp_file.name
 
         # =========================
-        # WHISPER (עם פרומפט למניעת טעויות שמיעה)
+        # WHISPER
         # =========================
         with open(tmp_filename, "rb") as file:
             transcription = client.audio.transcriptions.create(
@@ -285,10 +259,8 @@ def ai_chat():
         if known_name:
             system_prompt += f" השם של המשתמש הוא {known_name}."
 
-        # הוספת הודעת המשתמש להיסטוריה המקומית
         history.append({"role": "user", "content": user_text})
 
-        # פנייה ל-Groq לקבלת מענה מה-AI
         chat = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "system", "content": system_prompt}] + history[-6:],
@@ -299,7 +271,6 @@ def ai_chat():
         ai_reply = chat.choices[0].message.content.strip()
         history.append({"role": "assistant", "content": ai_reply})
 
-        # שמירה מיידית ומאובטחת לקובץ בסיס הנתונים
         save_chat_data(caller_id, history, known_name)
 
         clean_reply = clean_text(ai_reply)
@@ -313,7 +284,6 @@ def ai_chat():
         return Response(f"read=t-נועם עמוס כרגע אנא נסו שוב בעוד כמה שניות={RECORD_COMMAND}", mimetype='text/plain')
 
     finally:
-        # מחיקת קובץ השמע הזמני מהשרת
         if tmp_filename and os.path.exists(tmp_filename):
             os.remove(tmp_filename)
 
