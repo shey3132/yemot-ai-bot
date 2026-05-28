@@ -2,3 +2,4 @@ Flask==3.0.0
 requests==2.31.0
 groq==0.28.0
 gunicorn==21.2.0
+elevenlabs==1.7.0
