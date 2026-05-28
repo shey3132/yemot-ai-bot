@@ -3,11 +3,10 @@ import time
 import tempfile
 import requests
 import re
-import asyncio
-import edge_tts
 
 from flask import Flask, request, Response
 from groq import Groq
+from gtts import gTTS
 
 app = Flask(__name__)
 
@@ -28,7 +27,6 @@ RECORD_COMMAND = "user_audio,no,record,,,yes,yes,no,1,20"
 # MEMORY
 # =========================
 conversation_memory = {}
-
 caller_names = {}
 
 # =========================
@@ -71,7 +69,7 @@ def quick_answer(user_text):
 
 
 # =========================
-# TTS (EDGE TTS - עברית)
+# TTS (gTTS - חינמי ויציב)
 # =========================
 def generate_tts(text):
 
@@ -80,14 +78,8 @@ def generate_tts(text):
         delete=False
     )
 
-    async def run():
-        communicate = edge_tts.Communicate(
-            text,
-            voice="he-IL-AvriNeural"
-        )
-        await communicate.save(output_file.name)
-
-    asyncio.run(run())
+    tts = gTTS(text=text, lang="he")
+    tts.save(output_file.name)
 
     return output_file.name
 
@@ -137,7 +129,6 @@ def ai_chat():
         )
 
     yemot_path = f"ivr2:{audio_path}"
-
     tmp_filename = None
 
     try:
@@ -178,9 +169,10 @@ def ai_chat():
         if fast_reply:
 
             clean_reply = clean_text(fast_reply)
-            tts_file = generate_tts(clean_reply)
 
+            tts_file = generate_tts(clean_reply)
             filename = f"quick_{int(time.time())}.mp3"
+
             uploaded = upload_to_yemot(tts_file, filename)
 
             os.remove(tts_file)
@@ -218,10 +210,7 @@ def ai_chat():
                     mimetype='text/plain'
                 )
 
-        system_prompt = (
-            "אתה עוזר קולי בשם נועם "
-            "ענה בעברית טבעית וקצרה "
-        )
+        system_prompt = "אתה עוזר קולי בשם נועם ענה בעברית קצרה וברורה"
 
         if known_name:
             system_prompt += f"השם של המשתמש הוא {known_name} "
