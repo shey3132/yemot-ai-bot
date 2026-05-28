@@ -3,10 +3,11 @@ import time
 import tempfile
 import requests
 import re
+import asyncio
+import edge_tts
 
 from flask import Flask, request, Response
 from groq import Groq
-from elevenlabs.client import ElevenLabs
 
 app = Flask(__name__)
 
@@ -15,11 +16,8 @@ app = Flask(__name__)
 # =========================
 YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
 
 client = Groq(api_key=GROQ_API_KEY)
-
-tts_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
 
 # =========================
 # RECORD SETTINGS
@@ -51,7 +49,6 @@ def clean_text(text):
     text = text.replace("=", " ")
 
     text = re.sub(r'[^\u0590-\u05FFa-zA-Z0-9\s]', '', text)
-
     text = " ".join(text.split())
 
     return text
@@ -74,7 +71,7 @@ def quick_answer(user_text):
 
 
 # =========================
-# TTS (ELEVENLABS)
+# TTS (EDGE TTS - עברית)
 # =========================
 def generate_tts(text):
 
@@ -83,15 +80,14 @@ def generate_tts(text):
         delete=False
     )
 
-    audio = tts_client.text_to_speech.convert(
-        text=text,
-        voice_id="EXAVITQu4vr4xnSDxMaL",
-        model_id="eleven_multilingual_v2"
-    )
+    async def run():
+        communicate = edge_tts.Communicate(
+            text,
+            voice="he-IL-AvriNeural"
+        )
+        await communicate.save(output_file.name)
 
-    with open(output_file.name, "wb") as f:
-        for chunk in audio:
-            f.write(chunk)
+    asyncio.run(run())
 
     return output_file.name
 
@@ -148,10 +144,7 @@ def ai_chat():
 
         audio_response = requests.get(
             "https://www.call2all.co.il/ym/api/DownloadFile",
-            params={
-                "token": YEMOT_TOKEN,
-                "path": yemot_path
-            },
+            params={"token": YEMOT_TOKEN, "path": yemot_path},
             timeout=20
         )
 
@@ -185,10 +178,9 @@ def ai_chat():
         if fast_reply:
 
             clean_reply = clean_text(fast_reply)
-
             tts_file = generate_tts(clean_reply)
-            filename = f"quick_{int(time.time())}.mp3"
 
+            filename = f"quick_{int(time.time())}.mp3"
             uploaded = upload_to_yemot(tts_file, filename)
 
             os.remove(tts_file)
@@ -204,7 +196,6 @@ def ai_chat():
             conversation_memory[caller_id] = []
 
         if "קוראים לי" in user_text:
-
             try:
                 name = user_text.split("קוראים לי")[-1].strip()
                 if len(name) < 20:
@@ -229,9 +220,7 @@ def ai_chat():
 
         system_prompt = (
             "אתה עוזר קולי בשם נועם "
-            "דבר בעברית טבעית בלבד "
-            "תשובות קצרות וברורות "
-            "אל תשתמש בסימני פיסוק מיותרים "
+            "ענה בעברית טבעית וקצרה "
         )
 
         if known_name:
@@ -266,7 +255,6 @@ def ai_chat():
         tts_file = generate_tts(clean_reply)
 
         filename = f"{caller_id}_{int(time.time())}.mp3"
-
         uploaded = upload_to_yemot(tts_file, filename)
 
         os.remove(tts_file)
