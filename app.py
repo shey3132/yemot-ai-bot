@@ -25,9 +25,9 @@ TARGET_EMAIL = os.environ.get("TARGET_EMAIL")  # המייל הפרטי שלך ל
 client = Groq(api_key=GROQ_API_KEY)
 
 # =========================
-# RECORD SETTINGS
+# RECORD SETTINGS (6th parameter is 'yes' for NoMenu)
 # =========================
-RECORD_COMMAND = "user_audio,no,record,,,yes,yes,no,1,20"
+RECORD_COMMAND = "user_audio,no,record,,,yes,yes,no,1,120"
 
 # =========================
 # SQLITE DATABASE SETUP
@@ -216,8 +216,8 @@ def ai_chat():
     audio_path = audio_list[-1] if audio_list else None
 
     if not audio_path:
-        # הודעת פתיחה משודרגת וקצרה
-        welcome_msg = "שלום וברכה הגעתם לנועם העוזר החכם של שי ניהול פרויקטים נשמח לשוחח איתכם בסיום הדיבור לחצו על מקש סולמית"
+        # משפט פתיחה נקי ללא אזכור מקש סולמית
+        welcome_msg = "שלום וברכה הגעתם לנועם העוזר החכם של שי ניהול פרויקטים נשמח לשוחח איתכם אנא דברו לאחר הצליל"
         return Response(
             f"read=t-{welcome_msg}={RECORD_COMMAND}",
             mimetype='text/plain'
@@ -243,7 +243,7 @@ def ai_chat():
             tmp_filename = tmp_file.name
 
         # =========================
-        # WHISPER (פרומפט מועשר בשמות עבריים)
+        # WHISPER
         # =========================
         with open(tmp_filename, "rb") as file:
             transcription = client.audio.transcriptions.create(
@@ -251,7 +251,7 @@ def ai_chat():
                 model="whisper-large-v3",
                 language="he",
                 temperature=0.0,
-                prompt="ישעיהו, משה, אברהם, יעקב, שי, נועם, שלום, קוראים לי, שמי הוא, כן, לא"
+                prompt="ישעיהו, קוראים לי ישעיהו, שמי ישעיהו, משה, אברהם, יעקב, שי, נועם, שלום, קוראים לי, שמי הוא"
             )
 
         user_text = transcription.text.strip()
@@ -272,7 +272,7 @@ def ai_chat():
             return Response(f"read=t-{clean_text(fast_reply)}={RECORD_COMMAND}", mimetype='text/plain')
 
         # =========================
-        # EXTRACT & SAVE USER NAME
+        # EXTRACT & SAVE USER NAME + HEURISTIC FIX
         # =========================
         name_triggers = ["קוראים לי", "שמי הוא", "אני קוראים לי", "מדבר", "מדברת", "נעים מאוד אני", "זה אני", "אני "]
         for trigger in name_triggers:
@@ -283,10 +283,17 @@ def ai_chat():
                     extracted_name = extracted_name.replace(".", "").replace("?", "").strip()
                     if 1 <= len(extracted_name.split()) <= 3 and len(extracted_name) < 20:
                         known_name = extracted_name
-                        print(f"[NAME SYSTEM] Found user name: {known_name}")
                         break
                 except:
                     pass
+
+        if user_text in ["אישייהו", "שיור", "אישי אהו", "ישעיה", "ישיהו"]:
+            known_name = "ישעיהו"
+        if known_name in ["אישייהו", "שיור", "אישי אהו", "ישעיה", "ישיהו"]:
+            known_name = "ישעיהו"
+
+        if known_name:
+            print(f"[NAME SYSTEM] Found and verified user name: {known_name}")
 
         # =========================
         # WHAT IS MY NAME
@@ -297,16 +304,16 @@ def ai_chat():
             return Response(f"read=t-עדיין לא אמרת לי איך קוראים לך={RECORD_COMMAND}", mimetype='text/plain')
 
         # =========================
-        # SYSTEM PROMPT & AI CHAT (מרוסן ומתומצת)
+        # SYSTEM PROMPT & AI CHAT
         # =========================
         system_prompt = (
-            "קוראים לך נועם. אתה עוזר קולי חכם, אנושי וקולע בטלפון. "
-            "אתה פותחת ונבנית על ידי היוצר והמנהל שלך: שי מניהול פרויקטים. "
-            "חוקים קשיחים לאישיות שלך:\n"
-            "1. ענה תמיד לעניין ובקצר יחסית (משפט אחד או שניים בלבד). אל תנאם נאומים ארוכים!\n"
-            "2. אם המשתמש שואל מי פיתח אותך, תגיד בקצרה ששי מניהול פרויקטים פיתח אותך. אל תחזור על המשפט הזה באף תשובה אחרת סתם כך!\n"
-            "3. אם אתה לא יודע את שם המשתמש, שאל אותו במשפט הראשון בצורה פשוטה: 'נעים מאוד, עם מי יש לי העונג לשוחח?' או 'מה שמך לצורך השיחה?'.\n"
-            "4. דבר בצורה טבעית וחברותית, אל תשתמש בסימני פיסוק בכלל כדי שההקראה הטלפונית תישמע מצוין, ותמיד תסיים בשאלה קצרה שמזמינה את המשתמש להמשיך."
+            "קוראים לך נועם. אתה עוזר קולי חכם, קצר, אנושי וקולע בטלפון. "
+            "נוצרת על ידי שי מניהול פרויקטים כדי לסייע לו בניהול משימות ופניות. "
+            "חוקים חשובים לניהול השיחה:\n"
+            "1. ענה תמיד בקצרה (משפט אחד או שניים בלבד). אל תנאם נאומים, אל תשאל שאלות כלליות ומנותקות.\n"
+            "2. התמקד במטרה: שאל את המשתמש איך אפשר לעזור לו היום בצורה עניינית ומקצועית.\n"
+            "3. אם אתה לא יודע את שם המשתמש, שאל אותו פעם אחת בצורה פשוטה: 'עם מי יש לי העונג לשוחח?'.\n"
+            "4. אל תשתמש בסימני פיסוק בכלל (בלי נקודות, פסיקים או סימני שאלה) כדי שההקראה הטלפונית תזרום חלק, ותמיד תסיים במשפט קצר שמזמין את המשתמש להגיב."
         )
         if known_name:
             system_prompt += f" השם של המשתמש שמדבר איתך כרגע הוא {known_name}."
@@ -316,8 +323,8 @@ def ai_chat():
         chat = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "system", "content": system_prompt}] + history[-6:],
-            temperature=0.6, # הורדנו טמפרטורה כדי שיהיה ממוקד וישר לעניין
-            max_tokens=150   # הגבלנו ל-150 טוקנים כדי שהתשובות לא יהיו ארוכות ומייגעות
+            temperature=0.4,
+            max_tokens=100
         )
 
         ai_reply = chat.choices[0].message.content.strip()
