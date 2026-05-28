@@ -16,15 +16,14 @@ RECORD_COMMAND = "user_audio,no,record,,,yes,yes,no,1,60"
 
 @app.route('/ai-chat', methods=['GET', 'POST'])
 def ai_chat():
-    # הגנה מפני בקשות ניתוק
     if request.values.get('hangup') == 'yes':
         return Response("noop", mimetype='text/plain')
 
-    # פתרון באג השרשור: לוקחים את קובץ השמע האחרון שנשלח ברשימה
+    # קבלת הקובץ האחרון מהרשימה (פותר את באג השרשור של ימות המשיח)
     audio_list = request.values.getlist('user_audio')
     audio_path = audio_list[-1] if audio_list else None
 
-    # שלב א': כניסה ראשונית ללא קובץ (תחילת השיחה)
+    # שלב א': כניסה ראשונית
     if not audio_path:
         return Response(
             f"read=t-שלום אני מאזין במה אוכל לעזור={RECORD_COMMAND}", 
@@ -33,7 +32,7 @@ def ai_chat():
 
     print(f"Processing latest audio file: {audio_path}")
 
-    # שלב ב': הורדת הקובץ העדכני מימות המשיח
+    # שלב ב': הורדת הקובץ
     yemot_path = f"ivr2:{audio_path}"
     params = {"token": YEMOT_TOKEN, "path": yemot_path}
     try:
@@ -47,18 +46,17 @@ def ai_chat():
         print(f"Error downloading audio: {e}")
         return Response(f"read=t-חלה שגיאה בקבלת השמע אנא נסו שוב={RECORD_COMMAND}", mimetype='text/plain')
 
-    # שלב ג': שליחה לגוגל
+    # שלב ג': עיבוד ה-AI עם מודל 2.5 והגנת מכסות חכמה
     try:
         audio_file = client.files.upload(file=tmp_filename)
         
-        max_retries = 3
+        max_retries = 2
         ai_reply = None
         
         for attempt in range(max_retries):
             try:
-                # מעבר ל-gemini-1.5-flash שמציע מכסה גבוהה יותר בחינם (15 בקשות בדקה)
                 response = client.models.generate_content(
-                    model='gemini-1.5-flash',
+                    model='gemini-2.5-flash',
                     contents=[
                         "אתה עוזר קולי חכם בטלפון. ענה בקיצור נמרץ מאוד (עד 2 משפטים). אל תשתמש בשום סימני פיסוק - ללא פסיקים, ללא נקודות, וללא סימני שאלה. תן תשובה חלקה למנוע הקראה.",
                         audio_file
@@ -70,16 +68,25 @@ def ai_chat():
                 ai_reply = response.text
                 break
             except Exception as e:
+                error_str = str(e).upper()
                 print(f"Google API attempt {attempt + 1} failed: {e}")
+                
+                # אם חרגנו מהמכסה (429), חבל לנסות שוב בלולאה ולשרוף את המכסה הבאה. נצא מיד.
+                if "RESOURCE_EXHAUSTED" in error_str or "429" in error_str:
+                    print("Quota hit (429). Breaking retry loop to save quota.")
+                    break
+                
+                # בשגיאות זמניות אחרות (כמו 503), נמתין 3 שניות וננסה שוב פעם אחת
                 if attempt < max_retries - 1:
-                    time.sleep(3) # הגדלת ההמתנה ל-3 שניות כדי לתת לשרת לנשום
+                    time.sleep(3)
                 else:
                     raise e
         
         if not ai_reply:
-            ai_reply = "לא הצלחתי לעבד את התשובה אנא נסה שוב"
+            # אם הגענו לכאן בלי תשובה, זה אומר שחטפנו חסימת מכסה זמנית
+            return Response(f"read=t-המערכת עמוסה כרגע אנא דברו שוב בעוד כמה שניות={RECORD_COMMAND}", mimetype='text/plain')
             
-        # ניקוי הטקסט מסימני פיסוק שיכולים לשבור את ימות המשיח
+        # ניקוי הטקסט עבור הפארסר של ימות המשיח
         clean_reply = ai_reply.replace("**", "").replace("*", "").replace("#", "")
         clean_reply = clean_reply.replace(",", "").replace(".", "").replace("?", "").replace("!", "").replace(":", "").replace("-", " ")
         clean_reply = clean_reply.replace("&", " ו ").replace("=", " ")
