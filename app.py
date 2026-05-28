@@ -16,10 +16,14 @@ client = Groq(api_key=GROQ_API_KEY)
 
 RECORD_COMMAND = "user_audio,no,record,,,yes,yes,no,1,60"
 
+# זיכרון שיחות קצר
+conversation_memory = {}
+
 # =========================
 # ניקוי טקסט להקראה בימות
 # =========================
 def clean_text(text):
+
     text = text.replace("**", "").replace("*", "").replace("#", "")
     text = text.replace(",", "")
     text = text.replace(".", "")
@@ -42,7 +46,9 @@ def clean_text(text):
 @app.route('/ai-chat', methods=['GET', 'POST'])
 def ai_chat():
 
-    # טיפול בניתוק
+    start_time = time.time()
+
+    # ניתוק
     if request.values.get('hangup') == 'yes':
         return Response("noop", mimetype='text/plain')
 
@@ -52,7 +58,7 @@ def ai_chat():
     # התחלת שיחה
     if not audio_path:
         return Response(
-            f"read=t-שלום אני מאזין במה אוכל לעזור={RECORD_COMMAND}",
+            f"read=t-שלום וברכה במה אפשר לעזור={RECORD_COMMAND}",
             mimetype='text/plain'
         )
 
@@ -68,7 +74,8 @@ def ai_chat():
     tmp_filename = None
 
     try:
-        # הורדת ההקלטה מימות
+
+        # הורדת קובץ מימות
         audio_response = requests.get(
             "https://www.call2all.co.il/ym/api/DownloadFile",
             params=params,
@@ -77,10 +84,10 @@ def ai_chat():
 
         audio_response.raise_for_status()
 
-        # בדיקת קובץ תקין
+        # בדיקה שהקובץ תקין
         if len(audio_response.content) < 1000:
             return Response(
-                f"read=t-ההקלטה לא התקבלה טוב אנא נסו שוב={RECORD_COMMAND}",
+                f"read=t-לא שמעתי טוב אנא נסו שוב={RECORD_COMMAND}",
                 mimetype='text/plain'
             )
 
@@ -90,7 +97,7 @@ def ai_chat():
             tmp_filename = tmp_file.name
 
         # =========================
-        # תמלול Whisper
+        # תמלול
         # =========================
         with open(tmp_filename, "rb") as file:
 
@@ -111,7 +118,23 @@ def ai_chat():
             )
 
         # =========================
-        # AI RESPONSE
+        # זיכרון לפי מספר טלפון
+        # =========================
+        caller_id = request.values.get('ApiPhone', 'unknown')
+
+        if caller_id not in conversation_memory:
+            conversation_memory[caller_id] = []
+
+        conversation_memory[caller_id].append({
+            "role": "user",
+            "content": user_text
+        })
+
+        # שומר רק 6 הודעות אחרונות
+        conversation_memory[caller_id] = conversation_memory[caller_id][-6:]
+
+        # =========================
+        # AI
         # =========================
         chat = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -119,27 +142,36 @@ def ai_chat():
                 {
                     "role": "system",
                     "content": (
-                        "אתה עוזר קולי חכם בטלפון "
-                        "ענה בקצרה מאוד "
-                        "בלי סימני פיסוק "
-                        "בלי אימוגים "
-                        "עד שני משפטים קצרים"
+                        "אתה עוזר קולי חכם ואנושי בטלפון "
+                        "דבר טבעי וזורם "
+                        "ענה ברור ומדויק "
+                        "אל תשתמש בסימני פיסוק "
+                        "אל תחזור על משפטים קבועים "
+                        "אם אינך יודע תגיד שאינך יודע "
+                        "שמור תשובות יחסית קצרות"
                     )
-                },
-                {
-                    "role": "user",
-                    "content": user_text
                 }
-            ],
-            temperature=0.5,
-            max_tokens=120
+            ] + conversation_memory[caller_id],
+            temperature=0.7,
+            max_tokens=150
         )
 
         ai_reply = chat.choices[0].message.content.strip()
 
+        # שמירת תשובת הבוט בזיכרון
+        conversation_memory[caller_id].append({
+            "role": "assistant",
+            "content": ai_reply
+        })
+
+        # שוב שומר רק 6 אחרונות
+        conversation_memory[caller_id] = conversation_memory[caller_id][-6:]
+
         clean_reply = clean_text(ai_reply)
 
         print(f"AI reply: {clean_reply}")
+
+        print(f"Response time: {time.time() - start_time:.2f} seconds")
 
         return Response(
             f"read=t-{clean_reply}={RECORD_COMMAND}",
