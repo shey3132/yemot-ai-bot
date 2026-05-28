@@ -23,11 +23,12 @@ app = Flask(__name__)
 YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-SMTP_SERVER = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT = int(os.environ.get("SMTP_PORT", 587))
-EMAIL_ADDRESS = os.environ.get("EMAIL_ADDRESS")  
-EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD")  
-TARGET_EMAIL = os.environ.get("TARGET_EMAIL")  
+# הגדרות למייל - מעודכן לפורט 465 (SSL) לעקיפת חסימות רשת בשרתים
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 465
+EMAIL_ADDRESS = os.environ.get("EMAIL_ADDRESS")  # המייל של הבוט שממנו נשלח
+EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD")  # סיסמת האפליקציה בת 16 האותיות של גוגל
+TARGET_EMAIL = os.environ.get("TARGET_EMAIL")  # המייל הפרטי שלך שאליו תקבל את הסיכום
 
 client = Groq(api_key=GROQ_API_KEY)
 
@@ -55,40 +56,50 @@ def init_db():
     conn.commit()
     conn.close()
 
+# אתחול מסד הנתונים עם הפעלת השרת
 init_db()
 
 def get_chat_data(caller_id):
     """שליפת היסטוריה ושם עבור מספר טלפון"""
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT history, name FROM conversations WHERE caller_id = ?", (caller_id,))
-    row = cursor.fetchone()
-    conn.close()
-    
-    if row:
-        return json.loads(row[0]), row[1]
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT history, name FROM conversations WHERE caller_id = ?", (caller_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row and row[0]:
+            return json.loads(row[0]), row[1]
+    except Exception as e:
+        print(f"[DB ERROR] Failed to get data: {e}")
     return [], None
 
 def save_chat_data(caller_id, history, name):
     """שמירת היסטוריה ושם לבסיס הנתונים"""
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    history_json = json.dumps(history[-6:])  # שומרים רק 6 הודעות אחרונות
-    cursor.execute('''
-        INSERT INTO conversations (caller_id, history, name)
-        VALUES (?, ?, ?)
-        ON CONFLICT(caller_id) DO UPDATE SET history=excluded.history, name=COALESCE(excluded.name, conversations.name)
-    ''', (caller_id, history_json, name))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        history_json = json.dumps(history[-6:])  # שומרים רק 6 הודעות אחרונות
+        cursor.execute('''
+            INSERT INTO conversations (caller_id, history, name)
+            VALUES (?, ?, ?)
+            ON CONFLICT(caller_id) DO UPDATE SET history=excluded.history, name=COALESCE(excluded.name, conversations.name)
+        ''', (caller_id, history_json, name))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[DB ERROR] Failed to save data: {e}")
 
 def delete_chat_data(caller_id):
     """מחיקת רשומה לאחר סיום השיחה"""
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM conversations WHERE caller_id = ?", (caller_id,))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM conversations WHERE caller_id = ?", (caller_id,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[DB ERROR] Failed to delete data: {e}")
 
 # =========================
 # CLEAN TEXT & QUICK ANSWERS
@@ -109,7 +120,7 @@ def quick_answer(user_text):
     return None
 
 # =========================
-# SEND EMAIL FUNCTION
+# SEND EMAIL FUNCTION (SSL 465)
 # =========================
 def send_summary_email(caller_id, history, name):
     if not EMAIL_ADDRESS or not EMAIL_PASSWORD or not TARGET_EMAIL:
@@ -123,7 +134,7 @@ def send_summary_email(caller_id, history, name):
         body = f"<h2>סיכום שיחה שהסתיימה</h2>"
         body += f"<p><b>מספר טלפון:</b> {caller_id}</p>"
         body += f"<p><b>שם המשתמש:</b> {display_name}</p>"
-        body += f"<hr><p><b>פירוט השיחה:</b></p><ul>"
+        body += f"<hr><p><b>פירוט השיחה (הודעות אחרונות):</b></p><ul>"
         
         for msg in history:
             role_name = "משתמש" if msg['role'] == 'user' else "נועם (AI)"
@@ -136,9 +147,9 @@ def send_summary_email(caller_id, history, name):
         msg['Subject'] = subject
         msg.attach(MIMEText(body, 'html', 'utf-8'))
 
-        print("[EMAIL SYSTEM] Connecting to SMTP...")
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
+        print("[EMAIL SYSTEM] Connecting to SMTP via SSL (Port 465)...")
+        # שימוש ב-SMTP_SSL קשיח לעקיפת חסימות רשת של שרתי ענן
+        server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=15)
         server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
         server.sendmail(EMAIL_ADDRESS, TARGET_EMAIL, msg.as_string())
         server.quit()
@@ -155,7 +166,7 @@ def ai_chat():
     start_time = time.time()
     caller_id = request.values.get('ApiPhone', 'unknown')
     
-    # טעינת נתונים קיימים מהדאטה-בייס לחסינות מלאה מפני ריסטארטים
+    # טעינת נתונים קיימים מהדאטה-בייס לחסינות מלאה מפני ריסטארטים של Render
     history, known_name = get_chat_data(caller_id)
 
     # =========================
@@ -167,16 +178,16 @@ def ai_chat():
         if history:
             print(f"נמצאה היסטוריה של {len(history)} הודעות בבסיס הנתונים. שולח מייל...")
         else:
-            print("אזהרה: לא נמצאה היסטוריה בבסיס הנתונים. שולח מייל ריק לבדיקה.")
+            print("אזהרה: לא נמצאה היסטוריה בבסיס הנתונים עבור מספר זה. שולח מייל ריק.")
             history = [{"role": "user", "content": "לא נשמרה היסטוריה עבור שיחה זו"}]
             
-        # הרצה ב-Thread רקע
+        # הרצת שליחת המייל ב-Thread נפרד כדי להחזיר תגובה מיידית לימות המשיח
         threading.Thread(
             target=send_summary_email, 
             args=(caller_id, history, known_name)
         ).start()
         
-        # מחיקת הרשומה כדי שהשיחה הבאה מאותו מספר תתחיל מחדש
+        # מחיקת הרשומה כדי שהשיחה הבאה מאותו מספר תתחיל מחדש כדף חלק
         delete_chat_data(caller_id)
         return Response("noop", mimetype='text/plain')
 
@@ -186,6 +197,7 @@ def ai_chat():
     audio_list = request.values.getlist('user_audio')
     audio_path = audio_list[-1] if audio_list else None
 
+    # תחילת שיחה (הודעת פתיחה)
     if not audio_path:
         return Response(
             f"read=t-שלום וברכה הגעתם לנועם במה אפשר לעזור={RECORD_COMMAND}",
@@ -197,6 +209,7 @@ def ai_chat():
     tmp_filename = None
 
     try:
+        # הורדת קובץ השמע מימות המשיח
         audio_response = requests.get(
             "https://www.call2all.co.il/ym/api/DownloadFile",
             params={"token": YEMOT_TOKEN, "path": yemot_path},
@@ -212,7 +225,7 @@ def ai_chat():
             tmp_filename = tmp_file.name
 
         # =========================
-        # WHISPER
+        # WHISPER (עם פרומפט למניעת טעויות שמיעה)
         # =========================
         with open(tmp_filename, "rb") as file:
             transcription = client.audio.transcriptions.create(
@@ -265,8 +278,10 @@ def ai_chat():
         if known_name:
             system_prompt += f" השם של המשתמש הוא {known_name}."
 
+        # הוספת הודעת המשתמש להיסטוריה המקומית
         history.append({"role": "user", "content": user_text})
 
+        # פנייה ל-Groq לקבלת מענה מה-AI
         chat = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "system", "content": system_prompt}] + history[-6:],
@@ -277,7 +292,7 @@ def ai_chat():
         ai_reply = chat.choices[0].message.content.strip()
         history.append({"role": "assistant", "content": ai_reply})
 
-        # שמירה מיידית לקובץ בסיס הנתונים
+        # שמירה מיידית ומאובטחת לקובץ בסיס הנתונים
         save_chat_data(caller_id, history, known_name)
 
         clean_reply = clean_text(ai_reply)
@@ -291,6 +306,7 @@ def ai_chat():
         return Response(f"read=t-נועם עמוס כרגע אנא נסו שוב בעוד כמה שניות={RECORD_COMMAND}", mimetype='text/plain')
 
     finally:
+        # מחיקת קובץ השמע הזמני מהשרת
         if tmp_filename and os.path.exists(tmp_filename):
             os.remove(tmp_filename)
 
