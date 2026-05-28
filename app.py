@@ -19,7 +19,7 @@ def ai_chat():
     if request.values.get('hangup') == 'yes':
         return Response("noop", mimetype='text/plain')
 
-    # קבלת הקובץ האחרון מהרשימה (פותר את באג השרשור של ימות המשיח)
+    # קבלת קובץ השמע האחרון מהרשימה
     audio_list = request.values.getlist('user_audio')
     audio_path = audio_list[-1] if audio_list else None
 
@@ -30,9 +30,9 @@ def ai_chat():
             mimetype='text/plain'
         )
 
-    print(f"Processing latest audio file: {audio_path}")
+    print(f"Processing latest audio file using Gemini 2.0 Flash-Lite: {audio_path}")
 
-    # שלב ב': הורדת הקובץ
+    # שלב ב': הורדת הקובץ מימות המשיח
     yemot_path = f"ivr2:{audio_path}"
     params = {"token": YEMOT_TOKEN, "path": yemot_path}
     try:
@@ -46,7 +46,7 @@ def ai_chat():
         print(f"Error downloading audio: {e}")
         return Response(f"read=t-חלה שגיאה בקבלת השמע אנא נסו שוב={RECORD_COMMAND}", mimetype='text/plain')
 
-    # שלב ג': עיבוד ה-AI עם מודל 2.5 והגנת מכסות חכמה
+    # שלב ג': עיבוד ה-AI באמצעות מודל gemini-2.0-flash-lite (1500 בקשות ביום!)
     try:
         audio_file = client.files.upload(file=tmp_filename)
         
@@ -55,8 +55,9 @@ def ai_chat():
         
         for attempt in range(max_retries):
             try:
+                # שימוש במודל ה-Lite החסכוני במכסות
                 response = client.models.generate_content(
-                    model='gemini-2.5-flash',
+                    model='gemini-2.0-flash-lite',
                     contents=[
                         "אתה עוזר קולי חכם בטלפון. ענה בקיצור נמרץ מאוד (עד 2 משפטים). אל תשתמש בשום סימני פיסוק - ללא פסיקים, ללא נקודות, וללא סימני שאלה. תן תשובה חלקה למנוע הקראה.",
                         audio_file
@@ -71,19 +72,16 @@ def ai_chat():
                 error_str = str(e).upper()
                 print(f"Google API attempt {attempt + 1} failed: {e}")
                 
-                # אם חרגנו מהמכסה (429), חבל לנסות שוב בלולאה ולשרוף את המכסה הבאה. נצא מיד.
                 if "RESOURCE_EXHAUSTED" in error_str or "429" in error_str:
-                    print("Quota hit (429). Breaking retry loop to save quota.")
+                    print("Quota hit (429) on Gemini 2.0 Lite. Breaking retry loop.")
                     break
                 
-                # בשגיאות זמניות אחרות (כמו 503), נמתין 3 שניות וננסה שוב פעם אחת
                 if attempt < max_retries - 1:
                     time.sleep(3)
                 else:
                     raise e
         
         if not ai_reply:
-            # אם הגענו לכאן בלי תשובה, זה אומר שחטפנו חסימת מכסה זמנית
             return Response(f"read=t-המערכת עמוסה כרגע אנא דברו שוב בעוד כמה שניות={RECORD_COMMAND}", mimetype='text/plain')
             
         # ניקוי הטקסט עבור הפארסר של ימות המשיח
