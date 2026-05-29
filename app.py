@@ -59,7 +59,8 @@ def get_chat_data(caller_id):
 def save_chat_data(caller_id, history, name):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    history_json = json.dumps(history[-6:])
+    # שומרים את כל ההיסטוריה כדי שהמייל יכיל את כל השיחה
+    history_json = json.dumps(history)
 
     cursor.execute('''
         INSERT INTO conversations (caller_id, history, name)
@@ -95,9 +96,6 @@ def quick_answer(user_text):
     return None
 
 
-# =========================
-# ✅ EMAIL - רק זה הוחלף
-# =========================
 def send_summary_email(caller_id, history, name):
     if not GOOGLE_SCRIPT_URL or not TARGET_EMAIL:
         print("missing env")
@@ -105,33 +103,53 @@ def send_summary_email(caller_id, history, name):
 
     try:
         display_name = name if name else "משתמש לא ידוע"
-        subject = f"📄 סיכום שיחה מנועם: {display_name} ({caller_id})"
+        subject = f"📄 סיכום שיחה מלא - נועם AI: {display_name} ({caller_id})"
 
+        # עיצוב מייל חדש, נקי ומודרני
         body = """
-        <div style="font-family:Segoe UI,Tahoma;direction:rtl;max-width:600px;margin:auto;border:1px solid #e0e0e0;border-radius:12px;overflow:hidden;">
-
-            <div style="background:linear-gradient(135deg,#4F46E5,#3730A3);color:white;padding:20px;text-align:center;">
-                <h2 style="margin:0;">סיכום שיחה - נועם AI</h2>
+        <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; direction: rtl; max-width: 650px; margin: 20px auto; border: 1px solid #eaeaea; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); overflow: hidden; background-color: #ffffff;">
+            
+            <div style="background-color: #0f172a; color: #ffffff; padding: 25px; text-align: center; border-bottom: 4px solid #3b82f6;">
+                <h2 style="margin: 0; font-size: 24px; font-weight: 600;">סיכום שיחה נכנסת - נועם AI</h2>
             </div>
 
-            <div style="padding:15px;background:#f9fafb;">
-                <b>שם:</b> """ + display_name + """<br>
-                <b>טלפון:</b> """ + caller_id + """<br>
-                <b>תאריך:</b> """ + time.strftime('%d/%m/%Y %H:%M') + """
+            <div style="padding: 20px; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0; font-size: 15px; color: #334155;">
+                <table style="width: 100%; direction: rtl;">
+                    <tr>
+                        <td style="padding: 5px 0;"><b>שם מתקשר:</b> """ + display_name + """</td>
+                        <td style="padding: 5px 0;"><b>מספר טלפון:</b> <span style="direction: ltr; display: inline-block;">""" + caller_id + """</span></td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 5px 0;" colspan="2"><b>תאריך ושעה:</b> <span style="direction: ltr; display: inline-block;">""" + time.strftime('%d/%m/%Y %H:%M') + """</span></td>
+                    </tr>
+                </table>
             </div>
 
-            <div style="padding:20px;">
+            <div style="padding: 25px; color: #1e293b; font-size: 15px; line-height: 1.6;">
+                <h3 style="margin-top: 0; border-bottom: 2px solid #cbd5e1; padding-bottom: 10px; color: #0f172a;">היסטוריית ההודעות:</h3>
         """
 
         for msg in history:
-            role = "משתמש" if msg["role"] == "user" else "נועם"
-            body += f"<p><b>{role}:</b> {msg['content']}</p>"
+            if msg["role"] == "user":
+                body += f"""
+                <div style="margin-bottom: 15px; padding: 12px 15px; background-color: #e0f2fe; border-right: 4px solid #0ea5e9; border-radius: 4px;">
+                    <strong style="color: #0284c7;">משתמש:</strong><br>
+                    {msg['content']}
+                </div>
+                """
+            else:
+                body += f"""
+                <div style="margin-bottom: 15px; padding: 12px 15px; background-color: #f1f5f9; border-right: 4px solid #64748b; border-radius: 4px;">
+                    <strong style="color: #475569;">נועם:</strong><br>
+                    {msg['content']}
+                </div>
+                """
 
         body += """
             </div>
 
-            <div style="text-align:center;padding:10px;font-size:12px;color:#999;">
-                נשלח אוטומטית
+            <div style="text-align: center; padding: 15px; background-color: #f8fafc; font-size: 13px; color: #64748b; border-top: 1px solid #e2e8f0;">
+                הודעה זו הופקה ונשלחה אוטומטית על ידי מערכת נועם AI.
             </div>
 
         </div>
@@ -183,10 +201,13 @@ def ai_chat():
             tmp_file = f.name
 
         with open(tmp_file, "rb") as f:
+            # הוספת prompt מורחב במיוחד כדי שהמודל יצפה למילים אלו ולא יתבלבל
             transcript = client.audio.transcriptions.create(
                 file=f,
                 model="whisper-large-v3",
-                language="he"
+                language="he",
+                prompt="היי, זו שיחה טלפונית בעברית. מילים נפוצות בהקשר: נועם, עוזר קולי, ימות המשיח, תמלול, ניתוב, תפריט, נטפרי, שלום, להתראות, תודה.",
+                temperature=0.0
             )
 
         user_text = transcript.text.strip()
@@ -197,11 +218,12 @@ def ai_chat():
 
         history.append({"role": "user", "content": user_text})
 
-        system_prompt = "אתה נועם עוזר קולי. ענה בינוני לא קצר ולא ארוך."
+        system_prompt = "אתה נועם עוזר קולי. המשתמש מדבר אליך דרך הטלפון ולכן הטקסט עשוי להכיל שגיאות תמלול קלות - נסה להבין את ההקשר בכל זאת. ענה בצורה עניינית, לא קצרה מדי ולא ארוכה מדי."
 
+        # שולחים ל-AI רק את 10 ההודעות האחרונות למניעת עומס וחיסכון בעלויות
         chat = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[{"role": "system", "content": system_prompt}] + history[-6:],
+            messages=[{"role": "system", "content": system_prompt}] + history[-10:],
             temperature=0.5,
             max_tokens=150
         )
