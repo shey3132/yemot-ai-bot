@@ -17,6 +17,8 @@ YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL")
 TARGET_EMAIL = os.environ.get("TARGET_EMAIL")
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") # מפתח לחיפוש גוגל (Custom Search API)
+GOOGLE_CX = os.environ.get("GOOGLE_CX") # מזהה מנוע חיפוש של גוגל
 
 client = Groq(api_key=GROQ_API_KEY)
 
@@ -86,7 +88,9 @@ def delete_chat_data(caller_id):
 
 
 def clean_text(text):
-    # חוזרים לניקוי מוחלט! פסיקים וסימנים מיוחדים יגרמו לניתוק השיחה בימות המשיח
+    # הסרת כל תווי הבקרה שגורמים לתקיעות בימות המשיח: נקודה, מקף, שווה, אמפרסנד וכו'
+    text = re.sub(r'[\.\-\=&,]', '', text)
+    # ניקוי כללי משאר תווים מיוחדים
     text = re.sub(r'[^\u0590-\u05FFa-zA-Z0-9\s]', '', text)
     return " ".join(text.split())
 
@@ -98,6 +102,24 @@ def quick_answer(user_text):
     if "מה התאריך" in t:
         return f"התאריך היום {time.strftime('%d/%m/%Y')} במה עוד אוכל לעזור"
     return None
+
+
+def perform_google_search(query):
+    if not GOOGLE_API_KEY or not GOOGLE_CX:
+        return "מנגנון החיפוש לא הוגדר במערכת"
+    
+    url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={GOOGLE_API_KEY}&cx={GOOGLE_CX}"
+    try:
+        res = requests.get(url, timeout=10).json()
+        items = res.get("items", [])
+        if not items:
+            return "לא נמצאו תוצאות לחיפוש זה"
+        
+        results = [f"{item['title']} - {item['snippet']}" for item in items[:2]]
+        return "תוצאות מהרשת: " + " ".join(results)
+    except Exception as e:
+        print("GOOGLE SEARCH ERROR:", e)
+        return "הייתה שגיאה בחיפוש ברשת"
 
 
 def send_summary_email(caller_id, history, name):
@@ -127,10 +149,15 @@ def send_summary_email(caller_id, history, name):
                 <h3 style="margin-top: 0; border-bottom: 2px solid #cbd5e1; padding-bottom: 10px; color: #0f172a;">היסטוריית ההודעות המלאה:</h3>
         """
         for msg in history:
-            if msg["role"] == "user":
-                body += f'<div style="margin-bottom: 15px; padding: 12px 15px; background-color: #e0f2fe; border-right: 4px solid #0ea5e9; border-radius: 4px;"><strong style="color: #0284c7;">משתמש:</strong><br>{msg["content"]}</div>'
-            else:
-                body += f'<div style="margin-bottom: 15px; padding: 12px 15px; background-color: #f1f5f9; border-right: 4px solid #64748b; border-radius: 4px;"><strong style="color: #475569;">נועם:</strong><br>{msg["content"]}</div>'
+            role_display = "משתמש" if msg["role"] == "user" else "מערכת" if msg["role"] == "tool" else "נועם"
+            color_bg = "#e0f2fe" if msg["role"] == "user" else "#fef3c7" if msg["role"] == "tool" else "#f1f5f9"
+            color_border = "#0ea5e9" if msg["role"] == "user" else "#f59e0b" if msg["role"] == "tool" else "#64748b"
+            color_text = "#0284c7" if msg["role"] == "user" else "#d97706" if msg["role"] == "tool" else "#475569"
+            
+            # אל תציג קריאות לפונקציות (רק את התוכן של ההודעות)
+            if "tool_calls" not in msg:
+                content = msg.get("content", "")
+                body += f'<div style="margin-bottom: 15px; padding: 12px 15px; background-color: {color_bg}; border-right: 4px solid {color_border}; border-radius: 4px;"><strong style="color: {color_text};">{role_display}:</strong><br>{content}</div>'
         
         body += """
             </div>
@@ -187,27 +214,100 @@ def ai_chat():
 
         history.append({"role": "user", "content": user_text})
 
-        # ה-System Prompt שמכריח אותו לסיים בשאלה (הטקסט ינוקה מסימני שאלה בקוד, אך המילים יישארו כשאלה)
+        # הגדרת אופי, זרימה דינמית ומניעת סימני פיסוק
         system_prompt = (
-            "אתה נועם, עוזר קולי חכם ויעיל בטלפון. "
-            "התשובות שלך מוקראות למשתמש דרך מערכת טקסט-לדיבור (TTS), ולכן עליך לעמוד בכללים הבאים באופן מוחלט:\n"
-            "1. ענה תמיד בקצר, לעניין ובמשפטים פשוטים - מקסימום 2-3 משפטים לתשובה. אל תאריך במילים.\n"
-            "2. אל תשתמש בשום עיצוב טקסט ובשום סימן פיסוק (בלי כוכביות, בלי פסיקים, נקודות או סימני שאלה).\n"
-            "3. אל תציג רשימות ממוספרות (1, 2, 3) או נקודות. תאר את האפשרויות במשפט זורם אחד.\n"
-            "4. הטקסט שאתה מקבל מגיע מתמלול טלפוני ועשוי להכיל שגיאות כתיב קשות - התעלם מהשגיאות וחלץ את כוונת המשתמש מההקשר.\n"
-            "5. שמור על טון אדיב וידידותי, ללא גינוני נימוס ארוכים מדי שמבזבזים זמן.\n"
-            "6. כלל ברזל: עליך לסיים תמיד, ללא יוצא מן הכלל, את התשובה שלך בשאלה קצרה שמניעה לפעולה (למשל: 'איך עוד אוכל לעזור לך', 'תרצה לשמוע פרטים על כך', 'מה תרצה שנעשה עכשיו')."
+            "אתה נועם עוזר קולי של הארגון מדבר בטלפון עם המשתמש "
+            "אתה מדבר בגובה העיניים בשפה פשוטה זורמת ויומיומית "
+            "אל תאשר קבלה של כל משפט אל תגיד אוקיי או הבנתי פשוט תענה ישר ולעניין "
+            "איסור מוחלט על סימני פיסוק אל תשתמש בנקודה פסיק מקף שווה אמפרסנד או סימן שאלה בתשובה שלך "
+            "אם יש צורך במספרים קרא אותם ללא סמלים "
+            "תמיד תסיים בשאלה קצרה שמניעה להמשך שיחה "
+            "דוגמה לשיחה נכונה "
+            "משתמש נועם איפה התרומה שלי "
+            "נועם אני רואה שהיא נקלטה במערכת תרצה שאשלח קבלה "
+            "משתמש כן תודה "
+            "נועם מעולה שלחתי יש עוד משהו שתרצה עזרה איתו "
         )
 
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "google_search",
+                    "description": "ביצוע חיפוש באינטרנט במנוע של גוגל כדי למצוא עובדות, מידע עדכני או נתונים בזמן אמת.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "מילת החיפוש המדויקת לגוגל"
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            }
+        ]
+
+        # קריאה ראשונה לגרוק
         chat = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "system", "content": system_prompt}] + history[-10:],
             temperature=0.4,
-            max_tokens=150
+            max_tokens=150,
+            tools=tools,
+            tool_choice="auto"
         )
 
-        ai_reply = chat.choices[0].message.content.strip()
-        history.append({"role": "assistant", "content": ai_reply})
+        response_message = chat.choices[0].message
+        
+        # בדיקה אם המודל החליט שצריך חיפוש בגוגל
+        if response_message.tool_calls:
+            # הוספת קריאת הכלים להיסטוריה כדי שהמודל יבין את ההקשר
+            tool_calls_dict = []
+            for t in response_message.tool_calls:
+                tool_calls_dict.append({
+                    "id": t.id,
+                    "type": "function",
+                    "function": {
+                        "name": t.function.name,
+                        "arguments": t.function.arguments
+                    }
+                })
+                
+            history.append({
+                "role": "assistant",
+                "content": response_message.content,
+                "tool_calls": tool_calls_dict
+            })
+
+            for tool_call in response_message.tool_calls:
+                if tool_call.function.name == "google_search":
+                    args = json.loads(tool_call.function.arguments)
+                    search_result = perform_google_search(args["query"])
+                    
+                    history.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": "google_search",
+                        "content": search_result
+                    })
+            
+            # קריאה שנייה לגרוק אחרי קבלת התוצאות מהחיפוש
+            chat = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "system", "content": system_prompt}] + history[-12:],
+                temperature=0.4,
+                max_tokens=150
+            )
+            ai_reply = chat.choices[0].message.content.strip()
+            history.append({"role": "assistant", "content": ai_reply})
+        
+        else:
+            # אם לא היה חיפוש, פשוט שומרים את התשובה
+            ai_reply = response_message.content.strip()
+            history.append({"role": "assistant", "content": ai_reply})
+
         save_chat_data(caller_id, history, known_name)
 
         return Response(f"read=t-{clean_text(ai_reply)}={RECORD_COMMAND}", mimetype='text/plain')
