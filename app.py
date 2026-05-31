@@ -29,7 +29,11 @@ GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL")
 TARGET_EMAIL = os.environ.get("TARGET_EMAIL")
 
 client = Groq(api_key=GROQ_API_KEY)
-RECORD_CMD = "user_audio,no,record,,,yes,yes,no,1,120"
+
+# *** תיקון קריטי: פקודת ההקלטה המדויקת לפי ההוראות ***
+# ParameterName=user_audio, no, record, Path=, FileName=, NoMenu=yes, SaveHangup=yes, Append=no, MinLen=2, MaxLen=60
+RECORD_CMD = "user_audio,no,record,,,yes,yes,no,2,60"
+
 DB = "chat.db"
 
 executor = ThreadPoolExecutor(max_workers=5)
@@ -116,7 +120,9 @@ def send_email_summary(call_id, caller_id, history, name, client_instance):
 # TOOLS (APIs)
 # =====================
 def clean(text):
-    cleaned = text.replace(".", " ").replace("-", " ").replace("=", " ").replace("&", " ").replace(",", " ")
+    # *** תיקון קריטי: ניקוי אגרסיבי של כל סימן העלול להפיל את המערכת ***
+    # מסירים: נקודה, פסיק, מקף, שווה, אמפרסנד, גרש, מרכאות
+    cleaned = re.sub(r'[\.\-\=&\,\'\"!\?]', ' ', text)
     return " ".join(cleaned.split())
 
 def google_search(query):
@@ -126,7 +132,7 @@ def google_search(query):
         if r.status_code != 200: return None
         items = r.json().get("items", [])
         if not items: return "אין תוצאות"
-        return " | ".join(f"{i['title']} - {i['snippet']}" for i in items[:2])
+        return " | ".join(f"{i['title']} {i['snippet']}" for i in items[:2])
     except: return None
 
 def get_bus_realtime(station_code):
@@ -136,8 +142,8 @@ def get_bus_realtime(station_code):
         r = session.get(url, params=params, timeout=8)
         if r.status_code != 200: return None
         data = r.json()
-        if not data: return f"API ERROR: לא נמצאו נתונים כלל עבור התחנה {station_code}."
-        return f"DATA_FOUND: נתונים עבור התחנה {station_code}: {str(data[:3])}"
+        if not data: return f"API ERROR לא נמצאו נתונים כלל עבור התחנה {station_code}"
+        return f"DATA_FOUND נתונים עבור התחנה {station_code} {str(data[:3])}"
     except: return None
 
 def find_route_or_stop(search_text):
@@ -149,8 +155,8 @@ def find_route_or_stop(search_text):
         r = session.get(url, params=params, timeout=8)
         if r.status_code != 200: return None
         data = r.json()
-        if not data: return f"API ERROR: לא נמצא מידע עבור: '{search_text}'."
-        return f"DATA_FOUND: מידע מה-API: {str(data[:2])}"
+        if not data: return f"API ERROR לא נמצא מידע עבור {search_text}"
+        return f"DATA_FOUND מידע מה API {str(data[:2])}"
     except: return None
 
 # =====================
@@ -174,7 +180,8 @@ def ai_chat():
     # 1. NO AUDIO → ASK TO RECORD
     audio = request.values.getlist("user_audio")
     if not audio:
-        return f"read=t-שלום, אני העוזר הקולי שלך. במה אפשר לעזור?={RECORD_CMD}", 200
+        # *** תיקון קריטי: פקודת פתיחה מדויקת לפי הפורמט ***
+        return f"read=t-שלום אני העוזר הקולי שלך במה אפשר לעזור={RECORD_CMD}", 200
 
     # 2. DOWNLOAD AUDIO
     try:
@@ -201,45 +208,33 @@ def ai_chat():
     search_result = None
 
     station_match = re.search(r'\b\d{5}\b', text)
-    is_bus_query = any(k in text for k in ["אוטובוס", "קו", "תחנה", "מתי מגיע", "רכבת", "תחבורה"])
+    is_bus_query = any(k in text for k in ["אוטובוס", "קו", "תחנה", "מגיע", "רכבת", "תחבורה"])
     is_general_query = any(k in text for k in ["מה", "איך", "מי", "איפה", "למה", "מתי"])
 
     if station_match:
-        logger.info("Routing to Bus API (Station ID)")
         bus_result = get_bus_realtime(station_match.group())
     elif is_bus_query:
-        logger.info("Routing to Bus API (Route Search)")
         bus_result = find_route_or_stop(text)
     elif is_general_query:
-        logger.info("Routing to Google Search API")
         search_result = google_search(text)
-    else:
-        logger.info("Normal Chat (No API triggered)")
 
     # =====================
     # 5. LLM RESPONSE
     # =====================
     try:
-        # חוקי בסיס פשוטים ופתוחים
-        system_instruction = "אתה עוזר קולי אישי, חכם וידידותי למענה טלפוני. ענה בטבעיות, בקצרה ולעניין. הימנע מסימני פיסוק מורכבים."
+        # חוקי בסיס פשוטים ופתוחים - מחמיר על חוסר סימני פיסוק
+        system_instruction = "אתה עוזר קולי אישי חכם וידידותי למענה טלפוני ענה בטבעיות בקצרה ולעניין אל תשתמש כלל בסימני פיסוק או תווים מיוחדים"
         messages = [{"role": "system", "content": system_instruction}] + history
 
-        # הזרקת נתונים ספציפית רק אם הופעל כלי
         if bus_result:
-            messages.append({
-                "role": "system", 
-                "content": f"המשתמש שאל על תחבורה. מידע מה-API: {bus_result}. חובה לענות רק על בסיס זה, אל תמציא קווים. אם ה-API שגוי או ריק, ציין זאת."
-            })
+            messages.append({"role": "system", "content": f"מידע מהמערכת {bus_result} ענה רק על בסיס זה אל תמציא קווים"})
         elif search_result:
-            messages.append({
-                "role": "system",
-                "content": f"מידע עדכני מחיפוש בגוגל: {search_result}. נסח תשובה קצרה למשתמש על בסיס מידע זה."
-            })
+            messages.append({"role": "system", "content": f"מידע עדכני מחיפוש בגוגל {search_result} נסח תשובה קצרה למשתמש"})
 
         res_llm = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=messages,
-            temperature=0.4 # חזרנו לטמפרטורה מאוזנת לשיחה טבעית יותר
+            temperature=0.4
         )
 
         answer = res_llm.choices[0].message.content.strip()
@@ -247,13 +242,18 @@ def ai_chat():
 
     except Exception as e:
         logger.error(f"LLM failed: {e}")
-        answer = "יש תקלה זמנית, נסה שוב"
+        answer = "יש תקלה זמנית נסה שוב"
 
     history.append({"role": "assistant", "content": answer})
     save(caller_id, history)
 
+    # =====================
     # 6. RETURN
-    final_read = f"read=t-{clean(answer)}={RECORD_CMD}"
+    # =====================
+    # מנקים את הטקסט לפני השליחה חזרה לימות המשיח
+    clean_answer = clean(answer)
+    final_read = f"read=t-{clean_answer}={RECORD_CMD}"
+    logger.info(f"Returning: {final_read}")
     return final_read, 200
 
 if __name__ == "__main__":
