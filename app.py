@@ -208,16 +208,50 @@ def ai_chat():
     caller_id = request.values.get("ApiPhone", "unknown")
     call_id = request.values.get("ApiCallId", "0")
     
-    # טעינה בטוחה
+    # 1. טעינת היסטוריה מהדאטה-בייס
     history = load(caller_id)
     
-    # טיפול בניתוק
+    # 2. טיפול בניתוק (Hangup)
     if request.values.get("hangup") == "yes":
-        if history: # שולח מייל רק אם יש היסטוריה בזיכרון
+        if history:
             executor.submit(send_summary_email, call_id, caller_id, history, "מתקשר " + caller_id)
             delete_history(caller_id)
         return "noop", 200
         
+    logger.info(f"--- New Request from {caller_id} ---")
+
+    # 3. בדיקה אם יש אודיו
+    audio_list = request.values.getlist("user_audio")
+    if not audio_list:
+        # הודעת פתיחה אם אין אודיו
+        return f"read=t-שלום אני נועם העוזר הקולי שלך במה אפשר לעזור={RECORD_CMD}", 200
+
+    # 4. הורדה ותמלול
+    try:
+        path = f"ivr2:{audio_list[-1]}"
+        res = session.get("https://www.call2all.co.il/ym/api/DownloadFile", params={"token": YEMOT_TOKEN, "path": path}, timeout=20)
+        res.raise_for_status()
+        
+        # תמלול
+        processed_audio = process_audio(res.content)
+        # ... (כאן נכנס הלוגיקה של התמלול שכבר יש לך ב-app.py) ...
+        # ודא שהמשתנה 'text' מוגדר כאן:
+        tr = client.audio.transcriptions.create(file=("audio.wav", processed_audio), model="whisper-large-v3-turbo", language="he")
+        text = tr.text.strip()
+        logger.info(f"User said: '{text}'")
+    except Exception as e:
+        logger.error(f"Processing error: {e}")
+        return f"read=t-לא הצלחתי להבין נסה שוב={RECORD_CMD}", 200
+
+    # 5. כאן ה-text כבר בטוח מוגדר!
+    history.append({"role": "user", "content": text})
+    
+    # ... (שאר הלוגיקה של ה-LLM והחזרת תשובה כפי שהייתה) ...
+    # אל תשכח בסוף:
+    history.append({"role": "assistant", "content": answer})
+    save(caller_id, history)
+    
+    return f"read=t-{clean(answer)}={RECORD_CMD}", 200
     logger.info(f"--- New Request from {caller_id} ---")
     
     # ... (שאר הקוד של עיבוד האודיו והתמלול נשאר אותו דבר) ...
