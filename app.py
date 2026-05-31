@@ -28,9 +28,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 GOOGLE_CX = os.environ.get("GOOGLE_CX")
 GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL")
-TARGET_EMAIL = os.environ.get("TARGET_EMAIL")
 
-# משתנה למודל Whisper מקוסטם לעברית (סעיף 3)
 CUSTOM_WHISPER_URL = os.environ.get("CUSTOM_WHISPER_URL") 
 
 client = Groq(api_key=GROQ_API_KEY)
@@ -75,18 +73,12 @@ def delete_history(user):
     logger.info(f"History deleted for user: {user}")
 
 # =====================
-# AUDIO PROCESSING (סעיפים 1+2)
+# AUDIO PROCESSING
 # =====================
 def process_audio(audio_bytes):
-    """מבצע נורמליזציה לווליום וחותך שתיקות מתחילת וסוף ההקלטה"""
     try:
         audio = AudioSegment.from_wav(io.BytesIO(audio_bytes))
-        
-        # 1. נורמליזציה (הגברת שמע חלש למניעת רעשי רקע שנתפסים כמילים)
         audio = audio.normalize()
-        
-        # 2. חיתוך שתיקות (Silence Trimming)
-        # מזהה קטעים של שקט לפי הווליום היחסי ומוריד אותם
         nonsilent_ranges = detect_nonsilent(audio, min_silence_len=500, silence_thresh=audio.dBFS-16)
         if nonsilent_ranges:
             start_trim = nonsilent_ranges[0][0]
@@ -101,7 +93,7 @@ def process_audio(audio_bytes):
         return audio_bytes
 
 # =====================
-# EMAIL & SUMMARY LOGIC
+# EMAIL & SUMMARY LOGIC (GOOGLE APPS SCRIPT)
 # =====================
 def generate_smart_summary(call_id, history_copy):
     text = "\n".join(
@@ -120,11 +112,16 @@ def generate_smart_summary(call_id, history_copy):
     return res.choices[0].message.content.strip()
 
 def send_summary_email(call_id, caller_id, history_copy, name):
-    if not GOOGLE_SCRIPT_URL or not TARGET_EMAIL or not history_copy:
+    # שימוש בכתובת גיבוי במידה והמשתנה חסר ב-Render, כדי שהקוד לעולם לא יעצור
+    target = os.environ.get("TARGET_EMAIL") or "test@example.com"
+    
+    if not GOOGLE_SCRIPT_URL or not history_copy:
+        logger.warning(f"Email skipped: Missing URL or empty history. Call ID: {call_id}")
         return
         
     try:
-        raw_summary = generate_smart_summary(call_id, history_copy) if len(history_copy) > 5 else "שיחה קצרה מדי."
+        # הורדנו את מגבלת 5 ההודעות - עכשיו מסכם תמיד (החל מהודעה 1)
+        raw_summary = generate_smart_summary(call_id, history_copy) if len(history_copy) >= 1 else "שיחה קצרה מדי."
         safe_summary = html.escape(raw_summary)
             
         safe_name = html.escape((name or "משתמש לא ידוע")[:100])
@@ -154,9 +151,10 @@ def send_summary_email(call_id, caller_id, history_copy, name):
         
         body += "</div></div>"
         
-        response = session.post(GOOGLE_SCRIPT_URL, json={"to": TARGET_EMAIL, "subject": subject, "htmlBody": body}, timeout=15)
+        # שליחה לאפפ סקריפט שלך
+        response = session.post(GOOGLE_SCRIPT_URL, json={"to": target, "subject": subject, "htmlBody": body}, timeout=15)
         response.raise_for_status() 
-        log_event(call_id, "email_sent_success")
+        log_event(call_id, "email_sent_success", f"Sent to {target}")
         
     except Exception as e:
         log_event(call_id, "email_send_error", error=str(e))
@@ -230,18 +228,14 @@ def ai_chat():
     except:
         return f"read=t-שגיאה בהורדת הקלטה נסה שוב={RECORD_CMD}", 200
 
-    # עיבוד אודיו: ניקוי רעשים וחיתוך שתיקות
     processed_audio_bytes = process_audio(res.content)
 
-    # ביצוע התמלול - תומך במודל עצמאי (אם הוגדר) או ב-Groq
     try:
         if CUSTOM_WHISPER_URL:
-            # שליחה לשרת התמלול המותאם אישית שלך
             files = {'file': ('audio.wav', processed_audio_bytes, 'audio/wav')}
             tr_res = requests.post(CUSTOM_WHISPER_URL, files=files, timeout=10)
             text = tr_res.json().get("text", "").strip()
         else:
-            # Fallback ל-Groq
             tr = client.audio.transcriptions.create(
                 file=("audio.wav", processed_audio_bytes), 
                 model="whisper-large-v3-turbo", 
@@ -254,26 +248,39 @@ def ai_chat():
         logger.error(f"Transcription failed: {e}")
         return f"read=t-לא הצלחתי להבין נסה שוב={RECORD_CMD}", 200
 
+    # הגנה פונטית: חסימת טקסט באנגלית מלהגיע ל-LLM ולהזות
+    if re.search(r'[a-zA-Z]{2,}', text):
+        logger.warning(f"Detected English phonetic gibberish: '{text}'. Blocking from LLM.")
+        return f"read=t-סליחה לא שמעתי ברור מאיזו עיר לאיזו עיר תרצה לנסוע={RECORD_CMD}", 200
+
     history.append({"role": "user", "content": text})
 
-    # ניתוב חכם לחיפוש
+    # ניתוב חכם לחיפוש עם זיהוי מספרים כקווים
     bus_result = None
     search_result = None
 
     station_match = re.search(r'\b\d{5}\b', text)
+    line_match = re.search(r'\b\d{1,3}\b', text) # מזהה מספרים בודדים או תלת ספרתיים
     is_bus_query = any(k in text for k in ["אוטובוס", "קו", "תחנה", "מגיע", "רכבת", "תחבורה"])
     is_general_query = any(k in text for k in ["מה", "איך", "מי", "איפה", "למה", "מתי"])
 
     if station_match:
         bus_result = get_bus_realtime(station_match.group())
-    elif is_bus_query:
+    elif is_bus_query or line_match:
         bus_result = find_route_or_stop(text)
     elif is_general_query:
         search_result = google_search(text)
 
-    # יצירת תשובת מודל השפה
     try:
-        system_instruction = "אתה נועם עוזר קולי אישי חכם וידידותי למענה טלפוני ענה בטבעיות בקצרה ולעניין אל תשתמש כלל בסימני פיסוק או תווים מיוחדים"
+        # הקשחת ה-System Prompt נגד הזיות
+        system_instruction = (
+            "אתה נועם עוזר קולי אישי חכם וידידותי למענה טלפוני. "
+            "ענה בטבעיות, בקצרה ולעניין. אל תשתמש כלל בסימני פיסוק או תווים מיוחדים. "
+            "אם המשתמש שואל על קו אוטובוס או עיר ולא נמצא מידע במערכת אל תמציא מידע בשום אופן. "
+            "פשוט אמור 'לא מצאתי את הקו, מאיזו עיר לאיזו עיר תרצה לנסוע?'. "
+            "אם המשפט של המשתמש קטוע או לא הגיוני בקש ממנו לחזור שוב בבירור."
+        )
+        
         messages = [{"role": "system", "content": system_instruction}] + history
 
         if bus_result:
