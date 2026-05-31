@@ -1,249 +1,217 @@
 import os
 import time
+import re
 import json
 import sqlite3
 import logging
 from contextlib import closing
-from io import BytesIO
-from threading import Lock
-from collections import defaultdict
-
+from flask import Flask, request, jsonify
 import requests
-from flask import Flask, request
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from groq import Groq
 
 app = Flask(__name__)
 
-# =====================
+# =========================
 # CONFIG
-# =====================
+# =========================
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 GOOGLE_CX = os.environ.get("GOOGLE_CX")
-YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
-
-DB_FILE = "chat.db"
-RECORD_CMD = "user_audio,no,record,,,yes,yes,no,1,120"
-
-# =====================
-# LOG
-# =====================
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("app")
 
 client = Groq(api_key=GROQ_API_KEY)
 
+logging.basicConfig(level=logging.INFO)
+
+# =========================
+# HTTP SESSION (RETRIES)
+# =========================
 session = requests.Session()
+retry = Retry(total=2, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504])
+adapter = HTTPAdapter(max_retries=retry)
+session.mount("https://", adapter)
+session.mount("http://", adapter)
 
-cache = {}
-cache_lock = Lock()
-
-query_lock = defaultdict(Lock)
-
-# =====================
+# =========================
 # DB
-# =====================
+# =========================
+DB_FILE = "chat.db"
+
 def init_db():
-    with closing(sqlite3.connect(DB_FILE)) as c:
-        c.execute("""
+    with closing(sqlite3.connect(DB_FILE)) as conn:
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS chat (
-            id TEXT PRIMARY KEY,
+            user TEXT PRIMARY KEY,
             history TEXT
         )
         """)
 
 init_db()
 
-
-def load_history(cid):
-    with closing(sqlite3.connect(DB_FILE)) as c:
-        r = c.execute("SELECT history FROM chat WHERE id=?", (cid,)).fetchone()
-        if r:
-            return json.loads(r[0])
+def load_history(user):
+    with closing(sqlite3.connect(DB_FILE)) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT history FROM chat WHERE user=?", (user,))
+        row = cur.fetchone()
+        if row:
+            return json.loads(row[0])
     return []
 
-
-def save_history(cid, history):
-    with closing(sqlite3.connect(DB_FILE)) as c:
-        c.execute("""
-        INSERT INTO chat(id, history)
+def save_history(user, history):
+    with closing(sqlite3.connect(DB_FILE)) as conn:
+        conn.execute("""
+        INSERT INTO chat(user, history)
         VALUES(?, ?)
-        ON CONFLICT(id) DO UPDATE SET history=excluded.history
-        """, (cid, json.dumps(history[-20:])))
+        ON CONFLICT(user) DO UPDATE SET history=excluded.history
+        """, (user, json.dumps(history[-20:])))
 
-
-# =====================
-# TOOL DECISION (CRITICAL FIX)
-# =====================
-def should_use_google(text: str) -> bool:
-    keywords = [
-        "מחיר", "כמה עולה", "איפה", "מתי",
-        "חדשות", "זמן אמת", "קו", "אוטובוס",
-        "טיסה", "מצב", "עדכון"
-    ]
-    return any(k in text for k in keywords)
-
-
-# =====================
-# GOOGLE SEARCH (FIXED)
-# =====================
+# =========================
+# SAFE GOOGLE SEARCH (FIX 403)
+# =========================
 def google_search(query):
     if not GOOGLE_API_KEY or not GOOGLE_CX:
+        return "GOOGLE_DISABLED"
+
+    url = "https://www.googleapis.com/customsearch/v1"
+    params = {"q": query, "key": GOOGLE_API_KEY, "cx": GOOGLE_CX}
+
+    try:
+        r = session.get(url, params=params, timeout=8)
+
+        # 🔴 חשוב: טיפול ב־403
+        if r.status_code == 403:
+            return "GOOGLE_DISABLED"
+
+        r.raise_for_status()
+        data = r.json()
+
+        items = data.get("items", [])
+        if not items:
+            return "NO_RESULTS"
+
+        return " | ".join(
+            f"{i['title']} - {i['snippet']}"
+            for i in items[:2]
+        )
+
+    except Exception as e:
+        logging.error(f"Google error: {e}")
+        return "GOOGLE_ERROR"
+
+# =========================
+# SAFE TOOL PARSER
+# =========================
+def safe_parse_tool_args(args_str):
+    try:
+        return json.loads(args_str)
+    except:
         return None
 
-    key = query.strip()
-
-    with query_lock[key]:
-
-        if key in cache:
-            return cache[key]
-
-        try:
-            r = session.get(
-                "https://www.googleapis.com/customsearch/v1",
-                params={
-                    "q": query,
-                    "key": GOOGLE_API_KEY,
-                    "cx": GOOGLE_CX
-                },
-                timeout=10
-            )
-
-            if r.status_code != 200:
-                log.error(f"Google error {r.status_code}: {r.text}")
-
-                # חשוב: לא להחזיר tool failure חמור
-                return None
-
-            data = r.json()
-            items = data.get("items", [])
-
-            if not items:
-                return None
-
-            result = " ".join([
-                f"{i['title']} - {i['snippet']}"
-                for i in items[:2]
-            ])
-
-            cache[key] = result
-            return result
-
-        except Exception as e:
-            log.error(f"Google exception: {e}")
-            return None
-
-
-# =====================
-# CHAT
-# =====================
-@app.route("/ai-chat", methods=["GET", "POST"])
+# =========================
+# CHAT ENDPOINT
+# =========================
+@app.route("/ai-chat", methods=["GET"])
 def chat():
 
-    cid = request.values.get("ApiPhone", "unknown")
-    history = load_history(cid)
+    user = request.args.get("ApiPhone", "unknown")
+    text = request.args.get("text", "שלום")
 
-    audio = request.values.get("user_audio")
-    if not audio:
-        return "no audio"
+    history = load_history(user)
+    history.append({"role": "user", "content": text})
 
-    # ---------------------
-    # simulate transcript
-    # ---------------------
-    user_text = "dummy input"
+    system = {
+        "role": "system",
+        "content": "אתה עוזר חכם. ענה קצר וברור. אם לא חייב חיפוש - אל תשתמש בכלים."
+    }
 
-    history.append({"role": "user", "content": user_text})
-
-    # =====================
-    # TOOL GATE (CRITICAL FIX)
-    # =====================
-    use_search = should_use_google(user_text)
-
-    tools = []
-    if use_search:
-        tools = [{
-            "type": "function",
-            "function": {
-                "name": "google_search",
-                "description": "חיפוש רק אם חסר מידע עדכני",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string"}
-                    },
-                    "required": ["query"]
-                }
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "google_search",
+            "description": "חיפוש מידע בגוגל",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"}
+                },
+                "required": ["query"]
             }
-        }]
+        }
+    }]
 
-    system = (
-        "אתה עוזר חכם. "
-        "אל תשתמש בחיפוש אלא אם חסר מידע עדכני בלבד. "
-        "אם אין צורך – תענה לבד."
-    )
-
+    # =========================
+    # 1st LLM CALL
+    # =========================
     try:
         res = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[{"role": "system", "content": system}] + history,
+            messages=[system] + history,
             tools=tools,
-            tool_choice="auto" if tools else None,
-            max_tokens=200
+            tool_choice="auto",
+            temperature=0.4
         )
 
         msg = res.choices[0].message
 
-        # =====================
-        # TOOL FLOW SAFE
-        # =====================
-        if msg.tool_calls:
+    except Exception as e:
+        return f"error=LLM_FAIL"
 
-            tool_results = []
+    # =========================
+    # TOOL HANDLING (SAFE)
+    # =========================
+    if msg.tool_calls:
 
-            for t in msg.tool_calls:
-                if t.function.name == "google_search":
-                    args = json.loads(t.function.arguments)
-                    result = google_search(args.get("query", ""))
+        tool_outputs = []
 
-                    # FALLBACK CRITICAL FIX
-                    if not result:
-                        result = "אין מידע חיצוני זמין כרגע"
+        for call in msg.tool_calls:
 
-                    tool_results.append({
-                        "role": "tool",
-                        "tool_call_id": t.id,
-                        "content": result
-                    })
+            if call.function.name == "google_search":
 
-            history.append({
-                "role": "assistant",
-                "content": msg.content or "",
-                "tool_calls": []
-            })
+                args = safe_parse_tool_args(call.function.arguments)
 
-            history.extend(tool_results)
+                if not args or "query" not in args:
+                    result = "INVALID_QUERY"
+                else:
+                    result = google_search(args["query"])
 
+                # 🔴 קריטי: אם גוגל שבור → לא שוברים את המודל
+                if result in ["GOOGLE_DISABLED", "GOOGLE_ERROR"]:
+                    result = "אין כרגע חיבור לחיפוש ברשת"
+
+                tool_outputs.append({
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": result
+                })
+
+        # =========================
+        # 2nd LLM CALL (SAFE MODE)
+        # =========================
+        try:
             res2 = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
-                messages=[{"role": "system", "content": system}] + history,
-                max_tokens=200
+                messages=[system] + history + [msg] + tool_outputs,
+                temperature=0.4
             )
 
-            reply = res2.choices[0].message.content
+            answer = res2.choices[0].message.content
 
-        else:
-            reply = msg.content
+        except Exception:
+            # fallback אם tool שוב שובר
+            answer = "יש תקלה זמנית בעיבוד הבקשה"
 
-        history.append({"role": "assistant", "content": reply})
-        save_history(cid, history)
+    else:
+        answer = msg.content
 
-        return reply
+    history.append({"role": "assistant", "content": answer})
+    save_history(user, history)
 
-    except Exception as e:
-        log.error(f"LLM error: {e}")
-        return "שגיאה זמנית"
+    return answer
 
 
-# =====================
+# =========================
+# RUN
+# =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
