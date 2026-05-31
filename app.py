@@ -1,6 +1,6 @@
 import os
+import io
 import json
-import time
 import sqlite3
 import logging
 import re
@@ -12,6 +12,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from groq import Groq
+from pydub import AudioSegment
+from pydub.silence import detect_nonsilent
 
 app = Flask(__name__)
 
@@ -28,12 +30,11 @@ GOOGLE_CX = os.environ.get("GOOGLE_CX")
 GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL")
 TARGET_EMAIL = os.environ.get("TARGET_EMAIL")
 
+# משתנה למודל Whisper מקוסטם לעברית (סעיף 3)
+CUSTOM_WHISPER_URL = os.environ.get("CUSTOM_WHISPER_URL") 
+
 client = Groq(api_key=GROQ_API_KEY)
-
-# *** תיקון קריטי: פקודת ההקלטה המדויקת לפי ההוראות ***
-# ParameterName=user_audio, no, record, Path=, FileName=, NoMenu=yes, SaveHangup=yes, Append=no, MinLen=2, MaxLen=60
 RECORD_CMD = "user_audio,no,record,,,yes,yes,no,2,60"
-
 DB = "chat.db"
 
 executor = ThreadPoolExecutor(max_workers=5)
@@ -41,6 +42,11 @@ executor = ThreadPoolExecutor(max_workers=5)
 session = requests.Session()
 retry = Retry(total=2, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504])
 session.mount("https://", HTTPAdapter(max_retries=retry))
+
+def log_event(call_id, event, error=""):
+    msg = f"Call: {call_id} | Event: {event}"
+    if error: msg += f" | Error: {error}"
+    logger.info(msg)
 
 # =====================
 # DATABASE
@@ -69,14 +75,40 @@ def delete_history(user):
     logger.info(f"History deleted for user: {user}")
 
 # =====================
+# AUDIO PROCESSING (סעיפים 1+2)
+# =====================
+def process_audio(audio_bytes):
+    """מבצע נורמליזציה לווליום וחותך שתיקות מתחילת וסוף ההקלטה"""
+    try:
+        audio = AudioSegment.from_wav(io.BytesIO(audio_bytes))
+        
+        # 1. נורמליזציה (הגברת שמע חלש למניעת רעשי רקע שנתפסים כמילים)
+        audio = audio.normalize()
+        
+        # 2. חיתוך שתיקות (Silence Trimming)
+        # מזהה קטעים של שקט לפי הווליום היחסי ומוריד אותם
+        nonsilent_ranges = detect_nonsilent(audio, min_silence_len=500, silence_thresh=audio.dBFS-16)
+        if nonsilent_ranges:
+            start_trim = nonsilent_ranges[0][0]
+            end_trim = nonsilent_ranges[-1][1]
+            audio = audio[start_trim:end_trim]
+            
+        out_io = io.BytesIO()
+        audio.export(out_io, format="wav")
+        return out_io.getvalue()
+    except Exception as e:
+        logger.error(f"Audio processing error, returning original: {e}")
+        return audio_bytes
+
+# =====================
 # EMAIL & SUMMARY LOGIC
 # =====================
-def generate_summary(client_instance, history):
+def generate_smart_summary(call_id, history_copy):
     text = "\n".join(
         f"{m['role']}: {m.get('content','')}"
-        for m in history if m['role'] != 'system'
+        for m in history_copy if m['role'] != 'system'
     )
-    res = client_instance.chat.completions.create(
+    res = client.chat.completions.create(
         model="llama-3.1-8b-instant",
         messages=[
             {"role": "system", "content": "סכם את השיחה הזו ל-3 נקודות קצרות בלבד, בשפה עניינית."},
@@ -87,41 +119,52 @@ def generate_summary(client_instance, history):
     )
     return res.choices[0].message.content.strip()
 
-def send_email_summary(call_id, caller_id, history, name, client_instance):
-    try:
-        if not history or len(history) < 2: return
-        summary = generate_summary(client_instance, history)
-        safe_summary = html.escape(summary)
-        safe_name = html.escape(name or "לא ידוע")
-        safe_phone = html.escape(caller_id or "לא ידוע")
-
-        subject = f"סיכום שיחה ממענה חכם - {safe_name} ({safe_phone})"
-        body = f"""<div style="font-family: Arial; direction: rtl;">
-            <h2>סיכום שיחה במערכת</h2>
-            <p><b>משתמש:</b> {safe_name} | <b>טלפון:</b> {safe_phone}</p>
-            <h3>סיכום:</h3><p>{safe_summary.replace(chr(10), '<br>')}</p><hr><h3>תמלול מלא:</h3>"""
-
-        for msg in history:
-            role = msg["role"]
-            if role == "system": continue
-            content = html.escape(msg.get("content", ""))
-            color = "#e3f2fd" if role == "user" else "#f5f5f5"
-            sender_name = "משתמש" if role == "user" else "עוזר קולי"
-            body += f"<div style='background:{color}; margin:10px 0; padding:10px; border-radius:5px;'><b>{sender_name}:</b> {content}</div>"
-
-        body += "</div>"
+def send_summary_email(call_id, caller_id, history_copy, name):
+    if not GOOGLE_SCRIPT_URL or not TARGET_EMAIL or not history_copy:
+        return
         
-        if GOOGLE_SCRIPT_URL and TARGET_EMAIL:
-            requests.post(GOOGLE_SCRIPT_URL, json={"to": TARGET_EMAIL, "subject": subject, "htmlBody": body}, timeout=10)
+    try:
+        raw_summary = generate_smart_summary(call_id, history_copy) if len(history_copy) > 5 else "שיחה קצרה מדי."
+        safe_summary = html.escape(raw_summary)
+            
+        safe_name = html.escape((name or "משתמש לא ידוע")[:100])
+        safe_caller_id = html.escape((caller_id or "לא חסוי")[:50])
+        subject = f"📄 סיכום שיחה מלא - נועם AI: {safe_name} ({safe_caller_id})"
+        
+        body = f"""
+        <div style="font-family: 'Segoe UI', sans-serif; direction: rtl; max-width: 650px; margin: 20px auto; border: 1px solid #eaeaea; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); overflow: hidden; background-color: #ffffff;">
+            <div style="background-color: #0f172a; color: #ffffff; padding: 25px; text-align: center; border-bottom: 4px solid #3b82f6;">
+                <h2 style="margin: 0; font-size: 24px;">סיכום שיחה נכנסת - נועם AI</h2>
+            </div>
+            <div style="padding: 20px; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0; font-size: 15px; color: #334155;">
+                <p><strong>תקציר השיחה:</strong></p>
+                <div>{safe_summary}</div>
+            </div>
+            <div style="padding: 25px; font-size: 15px; line-height: 1.6;">
+        """
+        for msg in history_copy:
+            if msg["role"] == "system": continue
+            role_display = "משתמש" if msg["role"] == "user" else "מערכת" if msg["role"] == "tool" else "נועם"
+            color_bg = "#e0f2fe" if msg["role"] == "user" else "#fef3c7" if msg["role"] == "tool" else "#f1f5f9"
+            color_border = "#0ea5e9" if msg["role"] == "user" else "#f59e0b" if msg["role"] == "tool" else "#64748b"
+            
+            if "tool_calls" not in msg:
+                content = html.escape(msg.get("content", ""))
+                body += f'<div style="margin-bottom: 15px; padding: 12px 15px; background-color: {color_bg}; border-right: 4px solid {color_border}; border-radius: 4px;"><strong>{role_display}:</strong><br>{content}</div>'
+        
+        body += "</div></div>"
+        
+        response = session.post(GOOGLE_SCRIPT_URL, json={"to": TARGET_EMAIL, "subject": subject, "htmlBody": body}, timeout=15)
+        response.raise_for_status() 
+        log_event(call_id, "email_sent_success")
+        
     except Exception as e:
-        logger.error(f"EMAIL ERROR: {e}")
+        log_event(call_id, "email_send_error", error=str(e))
 
 # =====================
 # TOOLS (APIs)
 # =====================
 def clean(text):
-    # *** תיקון קריטי: ניקוי אגרסיבי של כל סימן העלול להפיל את המערכת ***
-    # מסירים: נקודה, פסיק, מקף, שווה, אמפרסנד, גרש, מרכאות
     cleaned = re.sub(r'[\.\-\=&\,\'\"!\?]', ' ', text)
     return " ".join(cleaned.split())
 
@@ -167,23 +210,19 @@ def ai_chat():
     caller_id = request.values.get("ApiPhone", "unknown")
     call_id = request.values.get("ApiCallId", "0")
     
-    # 📴 טיפול בסיום שיחה - HANGUP
     if request.values.get("hangup") == "yes":
         history = load(caller_id)
-        executor.submit(send_email_summary, call_id, caller_id, history.copy(), "מתקשר " + caller_id, client)
+        executor.submit(send_summary_email, call_id, caller_id, history.copy(), "מתקשר " + caller_id)
         delete_history(caller_id)
         return "noop", 200
         
     logger.info(f"--- New Request from {caller_id} ---")
     history = load(caller_id)
 
-    # 1. NO AUDIO → ASK TO RECORD
     audio = request.values.getlist("user_audio")
     if not audio:
-        # *** תיקון קריטי: פקודת פתיחה מדויקת לפי הפורמט ***
-        return f"read=t-שלום אני העוזר הקולי שלך במה אפשר לעזור={RECORD_CMD}", 200
+        return f"read=t-שלום אני נועם העוזר הקולי שלך במה אפשר לעזור={RECORD_CMD}", 200
 
-    # 2. DOWNLOAD AUDIO
     try:
         path = f"ivr2:{audio[-1]}"
         res = session.get("https://www.call2all.co.il/ym/api/DownloadFile", params={"token": YEMOT_TOKEN, "path": path}, timeout=20)
@@ -191,19 +230,33 @@ def ai_chat():
     except:
         return f"read=t-שגיאה בהורדת הקלטה נסה שוב={RECORD_CMD}", 200
 
-    # 3. TRANSCRIBE
+    # עיבוד אודיו: ניקוי רעשים וחיתוך שתיקות
+    processed_audio_bytes = process_audio(res.content)
+
+    # ביצוע התמלול - תומך במודל עצמאי (אם הוגדר) או ב-Groq
     try:
-        tr = client.audio.transcriptions.create(file=("audio.wav", res.content), model="whisper-large-v3-turbo", language="he")
-        text = tr.text.strip()
+        if CUSTOM_WHISPER_URL:
+            # שליחה לשרת התמלול המותאם אישית שלך
+            files = {'file': ('audio.wav', processed_audio_bytes, 'audio/wav')}
+            tr_res = requests.post(CUSTOM_WHISPER_URL, files=files, timeout=10)
+            text = tr_res.json().get("text", "").strip()
+        else:
+            # Fallback ל-Groq
+            tr = client.audio.transcriptions.create(
+                file=("audio.wav", processed_audio_bytes), 
+                model="whisper-large-v3-turbo", 
+                language="he"
+            )
+            text = tr.text.strip()
+            
         logger.info(f"User said: '{text}'")
-    except:
+    except Exception as e:
+        logger.error(f"Transcription failed: {e}")
         return f"read=t-לא הצלחתי להבין נסה שוב={RECORD_CMD}", 200
 
     history.append({"role": "user", "content": text})
 
-    # =====================
-    # 4. SMART ROUTING (TOOLS)
-    # =====================
+    # ניתוב חכם לחיפוש
     bus_result = None
     search_result = None
 
@@ -218,12 +271,9 @@ def ai_chat():
     elif is_general_query:
         search_result = google_search(text)
 
-    # =====================
-    # 5. LLM RESPONSE
-    # =====================
+    # יצירת תשובת מודל השפה
     try:
-        # חוקי בסיס פשוטים ופתוחים - מחמיר על חוסר סימני פיסוק
-        system_instruction = "אתה עוזר קולי אישי חכם וידידותי למענה טלפוני ענה בטבעיות בקצרה ולעניין אל תשתמש כלל בסימני פיסוק או תווים מיוחדים"
+        system_instruction = "אתה נועם עוזר קולי אישי חכם וידידותי למענה טלפוני ענה בטבעיות בקצרה ולעניין אל תשתמש כלל בסימני פיסוק או תווים מיוחדים"
         messages = [{"role": "system", "content": system_instruction}] + history
 
         if bus_result:
@@ -247,13 +297,8 @@ def ai_chat():
     history.append({"role": "assistant", "content": answer})
     save(caller_id, history)
 
-    # =====================
-    # 6. RETURN
-    # =====================
-    # מנקים את הטקסט לפני השליחה חזרה לימות המשיח
     clean_answer = clean(answer)
     final_read = f"read=t-{clean_answer}={RECORD_CMD}"
-    logger.info(f"Returning: {final_read}")
     return final_read, 200
 
 if __name__ == "__main__":
