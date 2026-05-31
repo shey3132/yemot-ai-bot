@@ -208,11 +208,29 @@ def ai_chat():
     caller_id = request.values.get("ApiPhone", "unknown")
     call_id = request.values.get("ApiCallId", "0")
     
+    # טעינה בטוחה
+    history = load(caller_id)
+    
+    # טיפול בניתוק
     if request.values.get("hangup") == "yes":
-        history = load(caller_id)
-        executor.submit(send_summary_email, call_id, caller_id, history.copy(), "מתקשר " + caller_id)
-        delete_history(caller_id)
+        if history: # שולח מייל רק אם יש היסטוריה בזיכרון
+            executor.submit(send_summary_email, call_id, caller_id, history, "מתקשר " + caller_id)
+            delete_history(caller_id)
         return "noop", 200
+        
+    logger.info(f"--- New Request from {caller_id} ---")
+    
+    # ... (שאר הקוד של עיבוד האודיו והתמלול נשאר אותו דבר) ...
+    
+    # אחרי הוספת התשובה להיסטוריה:
+    history.append({"role": "user", "content": text})
+    # ... (לוגיקה של ה-LLM) ...
+    history.append({"role": "assistant", "content": answer})
+    
+    # שמירה ל-DB
+    save(caller_id, history)
+    
+    return f"read=t-{clean(answer)}={RECORD_CMD}", 200
         
     logger.info(f"--- New Request from {caller_id} ---")
     history = load(caller_id)
