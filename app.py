@@ -329,7 +329,7 @@ def ai_chat():
         # מדידת זמן LLM סבב 1
         llm_t0 = time.perf_counter()
         chat = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-8b-instant",
             messages=chat_messages,
             temperature=0.4,
             frequency_penalty=0.3, 
@@ -360,7 +360,7 @@ def ai_chat():
             
             llm_t1 = time.perf_counter()
             chat = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="llama-3.1-8b-instant",
                 messages=chat_messages, temperature=0.4, frequency_penalty=0.3, max_tokens=150
             )
             log_event(call_id, "groq_llm_pass_2", duration_sec=round(time.perf_counter() - llm_t1, 3))
