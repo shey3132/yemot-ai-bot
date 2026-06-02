@@ -17,6 +17,8 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from flask import Flask, request, jsonify
 from groq import Groq
+# מנוע החיפוש החדש והחופשי
+from duckduckgo_search import DDGS
 
 app = Flask(__name__)
 
@@ -25,15 +27,13 @@ YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL")
 TARGET_EMAIL = os.environ.get("TARGET_EMAIL")
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") 
-GOOGLE_CX = os.environ.get("GOOGLE_CX") 
 
 # --- מערכת לוגים מובנים (Structured Logging) ---
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
 def log_event(call_id, event_name, **kwargs):
-    """ הפקת לוגים בפורמט JSON לטובת כלי ניטור (Datadog/Grafana) """
+    """ הפקת לוגים בפורמט JSON לטובת כלי ניטור """
     log_data = {"call_id": call_id, "event": event_name, "timestamp": time.time()}
     log_data.update(kwargs)
     logger.info(json.dumps(log_data))
@@ -47,14 +47,14 @@ session.mount("https://", adapter)
 
 client = Groq(api_key=GROQ_API_KEY, timeout=20.0)
 
-# --- תצורות ---
+# --- תצורות לימות המשיח ---
 RECORD_COMMAND = "user_audio,no,record,,,yes,yes,no,1,120"
 DB_FILE = "chat_memory.db"
 
-# מטמון מוגן לחיפושי גוגל (כולל פתרון ל-Cache Stampede)
-google_cache = {}
+# מטמון מוגן לחיפושים ברשת
+search_cache = {}
 global_cache_lock = Lock()
-query_locks = defaultdict(Lock) # נעילה ברמת מונח חיפוש
+query_locks = defaultdict(Lock)
 
 # Pool לשליחת מיילים וכיבוי מסודר
 email_executor = ThreadPoolExecutor(max_workers=10)
@@ -114,66 +114,67 @@ def delete_chat_data(caller_id):
 
 
 def clean_text(text):
-    # שומר על תווים רלוונטיים (מיילים, קישורים, אחוזים) ומנקה רעש
-    text = re.sub(r'[^\u0590-\u05FFa-zA-Z0-9\s@\.\-\+:/%]', '', text)
+    """
+    פונקציה קריטית לימות המשיח! מנקה לחלוטין כל סימן שעשוי לשבור את ה-TTS.
+    רווחים יחליפו נקודות, מקפים, פסיקים, סימני שווה ואמפרסנד.
+    """
+    if not text:
+        return ""
+    # 1. החלפת כל סימני הפיסוק (נקודות, מקפים, שווה, אמפרסנד וכו') ברווח
+    text = re.sub(r'[\.\-\=&,\?!:;_\(\)\[\]\{\}\"\']', ' ', text)
+    
+    # 2. הסרת כל תו שאינו עברית, אנגלית, מספר או רווח
+    text = re.sub(r'[^\u0590-\u05FFa-zA-Z0-9\s]', '', text)
+    
+    # 3. צמצום רווחים כפולים לרווח אחד כדי שהטקסט יקרא בצורה רציפה
     return " ".join(text.split())
 
 
-def get_safe_history(history, target_len=12):
-    if len(history) <= target_len:
-        return history
-    
-    sliced = history[-target_len:]
-    while sliced and sliced[0]["role"] in ["tool", "assistant"]:
-        if sliced[0]["role"] == "assistant" and "tool_calls" not in sliced[0]:
-            break
-        sliced.pop(0)
-        
-    return sliced if sliced else history[-2:]
-
-
-def perform_google_search(call_id, query):
-    if not GOOGLE_API_KEY or not GOOGLE_CX:
-        return "מנגנון החיפוש לא הוגדר במערכת"
-    
+def perform_duckduckgo_search(call_id, query):
+    """
+    ביצוע חיפוש חינמי, מהיר ומאובטח באמצעות DuckDuckGo.
+    כל התוצאות מנקות מסימני פיסוק באופן מיידי.
+    """
     now = time.time()
     
-    # 1. מניעת זליגת זיכרון מחייבת נעילה גלובלית קצרה
+    # 1. ניקוי זיכרון מטמון ישן (מעל 5 דקות)
     with global_cache_lock:
-        keys_to_delete = [k for k, v in google_cache.items() if now - v['time'] > 300]
+        keys_to_delete = [k for k, v in search_cache.items() if now - v['time'] > 300]
         for k in keys_to_delete:
-            del google_cache[k]
+            del search_cache[k]
             
-    # 2. מניעת Cache Stampede: נעילה ספציפית למונח החיפוש
+    # 2. מניעת Cache Stampede
     with query_locks[query]:
-        # בדיקה אם החיפוש כבר קיים במטמון
-        if query in google_cache:
-            return google_cache[query]['result']
+        if query in search_cache:
+            return search_cache[query]['result']
         
-        # אם אין, ה־Thread הנוכחי יבצע את החיפוש
         t0 = time.perf_counter()
-        url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={GOOGLE_API_KEY}&cx={GOOGLE_CX}"
         try:
-            res = session.get(url, timeout=10)
-            res.raise_for_status()
-            data = res.json()
-            items = data.get("items", [])
+            # הפעלת מנוע החיפוש החופשי
+            with DDGS() as ddgs:
+                search_results = list(ddgs.text(query, max_results=2))
             
             final_result = "לא נמצאו תוצאות לחיפוש זה"
-            if items:
-                results = [f"{item['title']} - {item['snippet']}" for item in items[:2]]
-                final_result = "תוצאות מהרשת: " + " ".join(results)
+            if search_results:
+                results = []
+                for item in search_results:
+                    title = item.get('title', '')
+                    body = item.get('body', '')
+                    results.append(f"{title} מתוך התיאור {body}")
                 
-            log_event(call_id, "google_search_success", duration_sec=round(time.perf_counter() - t0, 3), query=query)
+                final_result = "תוצאות מהרשת " + " ".join(results)
+                # ניקוי קריטי של התוצאות מנקודות, מקפים וסימנים מיוחדים!
+                final_result = clean_text(final_result)
+                
+            log_event(call_id, "search_success", duration_sec=round(time.perf_counter() - t0, 3), query=query)
             
-            # עדכון המטמון (נעילה גלובלית קצרה)
             with global_cache_lock:
-                google_cache[query] = {'result': final_result, 'time': time.time()}
+                search_cache[query] = {'result': final_result, 'time': time.time()}
                 
             return final_result
             
         except Exception as e:
-            log_event(call_id, "google_search_error", error=str(e), query=query)
+            log_event(call_id, "search_error", error=str(e), query=query)
             return "הייתה שגיאה בחיפוש ברשת"
 
 
@@ -237,25 +238,11 @@ def send_summary_email(call_id, caller_id, history_copy, name):
 
 @app.route('/health')
 def health_check():
-    return jsonify({"status": "ok", "timestamp": time.time()}), 200
+    return "ok", 200
 
 @app.route('/ready')
 def ready_check():
-    """ בדיקת Readiness מקיפה - DB ומשתני סביבה """
-    checks = {
-        "db": False,
-        "groq_key": bool(GROQ_API_KEY),
-        "google_key": bool(GOOGLE_API_KEY and GOOGLE_CX)
-    }
-    try:
-        with closing(sqlite3.connect(DB_FILE, timeout=5)) as conn:
-            conn.execute("SELECT 1").fetchone()
-        checks["db"] = True
-    except Exception:
-        pass
-        
-    status_code = 200 if all(checks.values()) else 503
-    return jsonify({"status": "ready" if status_code == 200 else "error", "checks": checks}), status_code
+    return "ready", 200
 
 
 @app.route('/ai-chat', methods=['GET', 'POST'])
@@ -284,12 +271,11 @@ def ai_chat():
 
     if not audio_path:
         log_event(call_id, "prompt_user")
-        return f"read=t-שלום כאן נועם העוזר הקולי שלך אנא דברו לאחר הצליל ובסיום הקישו סולמית={RECORD_COMMAND}", 200
+        return f"read=t-שלום כאן נועם העוזר הקולי שלכם אנא דברו לאחר הצליל={RECORD_COMMAND}", 200
 
     yemot_path = f"ivr2:{audio_path}"
 
     try:
-        # הורדת אודיו לזיכרון בלבד (ללא שמירת קובץ לדיסק)
         dl_t0 = time.perf_counter()
         audio_res = session.get("https://www.call2all.co.il/ym/api/DownloadFile", params={"token": YEMOT_TOKEN, "path": yemot_path}, timeout=20)
         audio_res.raise_for_status() 
@@ -298,13 +284,12 @@ def ai_chat():
         audio_buffer = BytesIO(audio_res.content)
         audio_buffer.name = "audio.wav"
 
-        # מדידת זמן תמלול
         whisp_t0 = time.perf_counter()
         transcript = client.audio.transcriptions.create(
             file=("audio.wav", audio_buffer.read()),
             model="whisper-large-v3-turbo",
             language="he",
-            prompt="היי, זו שיחה טלפונית בעברית. מילים נפוצות: נועם, עוזר קולי.",
+            prompt="היי זו שיחה טלפונית בעברית מילים נפוצות נועם עוזר קולי",
             temperature=0.0
         )
         user_text = transcript.text.strip()
@@ -313,20 +298,18 @@ def ai_chat():
         history.append({"role": "user", "content": user_text})
 
         system_prompt = (
-            "אתה נועם עוזר קולי של הארגון מדבר בטלפון עם המשתמש "
+            "אתה נועם עוזר קולי המדבר בטלפון עם משתמש "
             "אתה מדבר בגובה העיניים בשפה פשוטה זורמת ויומיומית "
             "אל תאשר קבלה של כל משפט אל תגיד אוקיי או הבנתי פשוט תענה ישר ולעניין "
-            "איסור מוחלט על סימני פיסוק אל תשתמש בנקודה פסיק מקף שווה אמפרסנד או סימן שאלה בתשובה שלך "
-            "אם יש צורך במספרים קרא אותם ללא סמלים "
-            " אם אתה משתמש בחיפוש גוגל חובה לזקק מהמשתמש רק מילות מפתח ממוקדות ואך ורק אם זה על מידע שאתה לא יודע"
-           "תמיד תסיים בשאלה קצרה שמניעה להמשך שיחה "
-             "אל תקצר במילים כשצריך "
+            "איסור מוחלט על סימני פיסוק אל תשתמש בנקודה פסיק מקף שווה אמפרסנד או סימן שאלה בתשובה שלך בשום צורה "
+            "השתמש אך ורק באותיות ורווחים "
+            "אם יש צורך במספרים קרא אותם במילים למשל מאה במקום 100 "
+            "תמיד תסיים בשאלה קצרה שמניעה להמשך שיחה"
         )
 
-        tools = [{"type": "function", "function": {"name": "google_search", "description": "ביצוע חיפוש באינטרנט במנוע של גוגל.", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "מילות מפתח בלבד לחיפוש בגוגל."}}, "required": ["query"]}}}]
+        tools = [{"type": "function", "function": {"name": "google_search", "description": "ביצוע חיפוש באינטרנט לקבלת מידע עדכני", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "מילות מפתח לחיפוש ללא סימני פיסוק"}}, "required": ["query"]}}}]
         chat_messages = [{"role": "system", "content": system_prompt}] + get_safe_history(history)
 
-        # מדידת זמן LLM סבב 1
         llm_t0 = time.perf_counter()
         chat = client.chat.completions.create(
             model="llama-3.1-8b-instant",
@@ -353,7 +336,7 @@ def ai_chat():
             for tool_call in response_message.tool_calls:
                 if tool_call.function.name == "google_search":
                     args = json.loads(tool_call.function.arguments)
-                    search_result = perform_google_search(call_id, args["query"])
+                    search_result = perform_duckduckgo_search(call_id, args["query"])
                     history.append({"role": "tool", "tool_call_id": tool_call.id, "name": "google_search", "content": search_result})
             
             chat_messages = [{"role": "system", "content": system_prompt}] + get_safe_history(history)
@@ -373,13 +356,16 @@ def ai_chat():
             history.append({"role": "assistant", "content": ai_reply})
 
         save_chat_data(caller_id, history, known_name)
-
         log_event(call_id, "request_completed", total_duration_sec=round(time.perf_counter() - req_t0, 3))
-        return f"read=t-{clean_text(ai_reply)}={RECORD_COMMAND}", 200
+        
+        # ניקוי סופי ומאובטח – הופך את כל מה שחוזר לימות המשיח לטקסט פשוט בלבד
+        safe_response_text = clean_text(ai_reply)
+        return f"read=t-{safe_response_text}={RECORD_COMMAND}", 200
 
     except Exception as e:
         log_event(call_id, "global_error", error=str(e))
-        return f"read=t-סליחה תקלה זמנית בעיבוד הנתונים אנא נסו שוב בשנית={RECORD_COMMAND}", 200
+        return f"read=t-סליחה תקלה זמנית בעיבוד הנתונים אנא נסו שוב={RECORD_COMMAND}", 200
 
 if __name__ == '__main__':
+    # מיועד להרצה מקומית, ב-Render הוא יופעל דרך Gunicorn
     app.run(host='0.0.0.0', port=5000)
