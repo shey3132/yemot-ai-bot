@@ -17,7 +17,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from flask import Flask, request, jsonify
 from groq import Groq
-from duckduckgo_search import DDGS
 
 app = Flask(__name__)
 
@@ -130,9 +129,7 @@ def clean_text(text):
 
 
 def get_safe_history(history, target_len=12):
-    """
-    ניהול היסטוריית שיחה בטוחה ומניעת שבירת ה-API של מודל השפה.
-    """
+    """ ניהול היסטוריית שיחה בטוחה ומניעת שבירת ה-API של מודל השפה. """
     if len(history) <= target_len:
         return history
     
@@ -145,10 +142,10 @@ def get_safe_history(history, target_len=12):
     return sliced if sliced else history[-2:]
 
 
-def perform_duckduckgo_search(call_id, query):
+def perform_wikipedia_search(call_id, query):
     """
-    ביצוע חיפוש חינמי, מהיר ומאובטח באמצעות DuckDuckGo.
-    כל התוצאות מנקות מסימני פיסוק באופן מיידי.
+    חיפוש ישיר ב-API הרשמי של ויקיפדיה בעברית.
+    חינמי לחלוטין, מהיר, ללא הגבלה וללא צורך במפתח.
     """
     now = time.time()
     
@@ -165,21 +162,56 @@ def perform_duckduckgo_search(call_id, query):
         
         t0 = time.perf_counter()
         try:
-            with DDGS() as ddgs:
-                search_results = list(ddgs.text(query, max_results=2))
+            # שלב א: חיפוש כותרת הערך המתאים ביותר
+            search_url = "https://he.wikipedia.org/w/api.php"
+            search_params = {
+                "action": "query",
+                "list": "search",
+                "srsearch": query,
+                "format": "json",
+                "srlimit": 1
+            }
             
-            final_result = "לא נמצאו תוצאות לחיפוש זה"
-            if search_results:
-                results = []
-                for item in search_results:
-                    title = item.get('title', '')
-                    body = item.get('body', '')
-                    results.append(f"{title} מתוך התיאור {body}")
+            search_res = session.get(search_url, params=search_params, timeout=10)
+            search_res.raise_for_status()
+            search_data = search_res.json()
+            
+            search_results = search_data.get("query", {}).get("search", [])
+            if not search_results:
+                return "לא נמצא ערך מתאים בויקיפדיה"
                 
-                final_result = "תוצאות מהרשת " + " ".join(results)
-                final_result = clean_text(final_result)
+            page_title = search_results[0]["title"]
+            
+            # שלב ב: שליפת פסקת הפתיחה (התקציר) של הערך שנמצא
+            content_params = {
+                "action": "query",
+                "prop": "extracts",
+                "exintro": True,
+                "explaintext": True,
+                "titles": page_title,
+                "format": "json"
+            }
+            
+            content_res = session.get(search_url, params=content_params, timeout=10)
+            content_res.raise_for_status()
+            content_data = content_res.json()
+            
+            pages = content_data.get("query", {}).get("pages", {})
+            page_id = list(pages.keys())[0]
+            
+            if page_id == "-1":
+                return "לא נמצא תוכן לערך זה"
                 
-            log_event(call_id, "search_success", duration_sec=round(time.perf_counter() - t0, 3), query=query)
+            extract = pages[page_id].get("extract", "")
+            
+            # הגבלת כמות המלל כדי שלא יקריא שעות בטלפון
+            short_extract = extract[:600]
+            final_result = f"מתוך ויקיפדיה על {page_title}  {short_extract}"
+            
+            # ניקוי סימני פיסוק עבור ימות המשיח
+            final_result = clean_text(final_result)
+            
+            log_event(call_id, "wikipedia_search_success", duration_sec=round(time.perf_counter() - t0, 3), query=query)
             
             with global_cache_lock:
                 search_cache[query] = {'result': final_result, 'time': time.time()}
@@ -187,8 +219,8 @@ def perform_duckduckgo_search(call_id, query):
             return final_result
             
         except Exception as e:
-            log_event(call_id, "search_error", error=str(e), query=query)
-            return "הייתה שגיאה בחיפוש ברשת"
+            log_event(call_id, "wikipedia_search_error", error=str(e), query=query)
+            return "שגיאה זמנית בשליפת המידע"
 
 
 def generate_smart_summary(call_id, history):
@@ -310,8 +342,11 @@ def ai_chat():
 
         history.append({"role": "user", "content": user_text})
 
+        # עדכון ה-Prompt: הנחיה ברורה להשתמש בידע הפנימי אם הכלי החיצוני לא מוצא תשובה
         system_prompt = (
-            "אתה נועם עוזר קולי המדבר בטלפון עם משתמש "
+            "אתה נועם עוזר קולי חכם המדבר בטלפון עם משתמש "
+            "יש לך ידע כללי נרחב מאוד על העולם אנציקלופדיה מדע היסטוריה ואישים "
+            "אם כלי החיפוש החיצוני מחזיר תשובה ריקה או שלא נמצא ערך השתמש מיד בידע הפנימי והעמוק שלך כדי לענות למשתמש בצורה מלאה אל תגיד שאינך יודע "
             "אתה מדבר בגובה העיניים בשפה פשוטה זורמת ויומיומית "
             "אל תאשר קבלה של כל משפט אל תגיד אוקיי או הבנתי פשוט תענה ישר ולעניין "
             "איסור מוחלט על סימני פיסוק אל תשתמש בנקודה פסיק מקף שווה אמפרסנד או סימן שאלה בתשובה שלך בשום צורה "
@@ -320,7 +355,7 @@ def ai_chat():
             "תמיד תסיים בשאלה קצרה שמניעה להמשך שיחה"
         )
 
-        tools = [{"type": "function", "function": {"name": "google_search", "description": "ביצוע חיפוש באינטרנט לקבלת מידע עדכני", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "מילות מפתח לחיפוש ללא סימני פיסוק"}}, "required": ["query"]}}}]
+        tools = [{"type": "function", "function": {"name": "wikipedia_search", "description": "חיפוש במידע אנציקלופדי של ויקיפדיה לקבלת מושגים אישים היסטוריה ומדע", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "המושג או האדם לחיפוש"}}, "required": ["query"]}}}]
         chat_messages = [{"role": "system", "content": system_prompt}] + get_safe_history(history)
 
         llm_t0 = time.perf_counter()
@@ -347,10 +382,11 @@ def ai_chat():
             history.append({"role": "assistant", "content": response_message.content, "tool_calls": tool_calls_dict})
 
             for tool_call in response_message.tool_calls:
-                if tool_call.function.name == "google_search":
+                if tool_call.function.name == "wikipedia_search":
                     args = json.loads(tool_call.function.arguments)
-                    search_result = perform_duckduckgo_search(call_id, args["query"])
-                    history.append({"role": "tool", "tool_call_id": tool_call.id, "name": "google_search", "content": search_result})
+                    # קריאה לפונקציית החיפוש החדשה של ויקיפדיה
+                    search_result = perform_wikipedia_search(call_id, args["query"])
+                    history.append({"role": "tool", "tool_call_id": tool_call.id, "name": "wikipedia_search", "content": search_result})
             
             chat_messages = [{"role": "system", "content": system_prompt}] + get_safe_history(history)
             
@@ -371,7 +407,6 @@ def ai_chat():
         save_chat_data(caller_id, history, known_name)
         log_event(call_id, "request_completed", total_duration_sec=round(time.perf_counter() - req_t0, 3))
         
-        # ניקוי סופי – הופך את הכל לטקסט פשוט בלבד עבור ימות המשיח
         safe_response_text = clean_text(ai_reply)
         return f"read=t-{safe_response_text}={RECORD_COMMAND}", 200
 
