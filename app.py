@@ -17,7 +17,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from flask import Flask, request, jsonify
 from groq import Groq
-# מנוע החיפוש החדש והחופשי
 from duckduckgo_search import DDGS
 
 app = Flask(__name__)
@@ -130,6 +129,22 @@ def clean_text(text):
     return " ".join(text.split())
 
 
+def get_safe_history(history, target_len=12):
+    """
+    ניהול היסטוריית שיחה בטוחה ומניעת שבירת ה-API של מודל השפה.
+    """
+    if len(history) <= target_len:
+        return history
+    
+    sliced = history[-target_len:]
+    while sliced and sliced[0]["role"] in ["tool", "assistant"]:
+        if sliced[0]["role"] == "assistant" and "tool_calls" not in sliced[0]:
+            break
+        sliced.pop(0)
+        
+    return sliced if sliced else history[-2:]
+
+
 def perform_duckduckgo_search(call_id, query):
     """
     ביצוע חיפוש חינמי, מהיר ומאובטח באמצעות DuckDuckGo.
@@ -150,7 +165,6 @@ def perform_duckduckgo_search(call_id, query):
         
         t0 = time.perf_counter()
         try:
-            # הפעלת מנוע החיפוש החופשי
             with DDGS() as ddgs:
                 search_results = list(ddgs.text(query, max_results=2))
             
@@ -163,7 +177,6 @@ def perform_duckduckgo_search(call_id, query):
                     results.append(f"{title} מתוך התיאור {body}")
                 
                 final_result = "תוצאות מהרשת " + " ".join(results)
-                # ניקוי קריטי של התוצאות מנקודות, מקפים וסימנים מיוחדים!
                 final_result = clean_text(final_result)
                 
             log_event(call_id, "search_success", duration_sec=round(time.perf_counter() - t0, 3), query=query)
@@ -358,7 +371,7 @@ def ai_chat():
         save_chat_data(caller_id, history, known_name)
         log_event(call_id, "request_completed", total_duration_sec=round(time.perf_counter() - req_t0, 3))
         
-        # ניקוי סופי ומאובטח – הופך את כל מה שחוזר לימות המשיח לטקסט פשוט בלבד
+        # ניקוי סופי – הופך את הכל לטקסט פשוט בלבד עבור ימות המשיח
         safe_response_text = clean_text(ai_reply)
         return f"read=t-{safe_response_text}={RECORD_COMMAND}", 200
 
@@ -367,5 +380,4 @@ def ai_chat():
         return f"read=t-סליחה תקלה זמנית בעיבוד הנתונים אנא נסו שוב={RECORD_COMMAND}", 200
 
 if __name__ == '__main__':
-    # מיועד להרצה מקומית, ב-Render הוא יופעל דרך Gunicorn
     app.run(host='0.0.0.0', port=5000)
