@@ -144,45 +144,55 @@ def get_safe_history(history, target_len=12):
 
 def perform_wikipedia_search(call_id, query):
     """
-    חיפוש ישיר ב-API הרשמי של ויקיפדיה בעברית.
-    חינמי לחלוטין, מהיר, ללא הגבלה וללא צורך במפתח.
+    חיפוש משופר וגמיש ב-API של ויקיפדיה בעברית כדי למנוע שגיאות זמניות.
     """
+    # ניקוי בסיסי של שאילתת החיפוש מרעשים
+    query = re.sub(r'[^\u0590-\u05FFa-zA-Z0-9\s]', ' ', query).strip()
+    if not query:
+        return "לא צוין מושג תקין לחיפוש"
+
     now = time.time()
     
-    # 1. ניקוי זיכרון מטמון ישן (מעל 5 דקות)
     with global_cache_lock:
         keys_to_delete = [k for k, v in search_cache.items() if now - v['time'] > 300]
         for k in keys_to_delete:
             del search_cache[k]
             
-    # 2. מניעת Cache Stampede
     with query_locks[query]:
         if query in search_cache:
             return search_cache[query]['result']
         
         t0 = time.perf_counter()
         try:
-            # שלב א: חיפוש כותרת הערך המתאים ביותר
             search_url = "https://he.wikipedia.org/w/api.php"
             search_params = {
                 "action": "query",
                 "list": "search",
                 "srsearch": query,
                 "format": "json",
-                "srlimit": 1
+                "srlimit": 2
             }
             
-            search_res = session.get(search_url, params=search_params, timeout=10)
+            search_res = session.get(search_url, params=search_params, timeout=12)
             search_res.raise_for_status()
             search_data = search_res.json()
             
             search_results = search_data.get("query", {}).get("search", [])
+            
+            # אם לא נמצא, ננסה להוריד מילים קצרות או מילות קישור כדי להרחיב את החיפוש
+            if not search_results and " " in query:
+                words = [w for w in query.split() if len(w) > 2]
+                if words:
+                    search_params["srsearch"] = " ".join(words)
+                    search_res = session.get(search_url, params=search_params, timeout=10)
+                    search_data = search_res.json()
+                    search_results = search_data.get("query", {}).get("search", [])
+
             if not search_results:
-                return "לא נמצא ערך מתאים בויקיפדיה"
+                return "לא נמצא ערך מתאים או מידע מדויק באנציקלופדיה"
                 
             page_title = search_results[0]["title"]
             
-            # שלב ב: שליפת פסקת הפתיחה (התקציר) של הערך שנמצא
             content_params = {
                 "action": "query",
                 "prop": "extracts",
@@ -200,15 +210,14 @@ def perform_wikipedia_search(call_id, query):
             page_id = list(pages.keys())[0]
             
             if page_id == "-1":
-                return "לא נמצא תוכן לערך זה"
+                return "לא נמצא תוכן מפורט עבור ערך זה"
                 
-            extract = pages[page_id].get("extract", "")
-            
-            # הגבלת כמות המלל כדי שלא יקריא שעות בטלפון
-            short_extract = extract[:600]
+            extract = pages[page_id].get("extract", "").strip()
+            if not extract:
+                return "הערך קיים אך הוא ריק מתוכן"
+                
+            short_extract = extract[:650]
             final_result = f"מתוך ויקיפדיה על {page_title}  {short_extract}"
-            
-            # ניקוי סימני פיסוק עבור ימות המשיח
             final_result = clean_text(final_result)
             
             log_event(call_id, "wikipedia_search_success", duration_sec=round(time.perf_counter() - t0, 3), query=query)
@@ -220,7 +229,7 @@ def perform_wikipedia_search(call_id, query):
             
         except Exception as e:
             log_event(call_id, "wikipedia_search_error", error=str(e), query=query)
-            return "שגיאה זמנית בשליפת המידע"
+            return "לא ניתן לשלוף מידע ברגע זה עקב מגבלה טכנית"
 
 
 def generate_smart_summary(call_id, history):
@@ -342,11 +351,12 @@ def ai_chat():
 
         history.append({"role": "user", "content": user_text})
 
-        # עדכון ה-Prompt: הנחיה ברורה להשתמש בידע הפנימי אם הכלי החיצוני לא מוצא תשובה
+        # עדכון הנחיות ה-Prompt למניעת הזיות והמצאת נתונים
         system_prompt = (
             "אתה נועם עוזר קולי חכם המדבר בטלפון עם משתמש "
-            "יש לך ידע כללי נרחב מאוד על העולם אנציקלופדיה מדע היסטוריה ואישים "
-            "אם כלי החיפוש החיצוני מחזיר תשובה ריקה או שלא נמצא ערך השתמש מיד בידע הפנימי והעמוק שלך כדי לענות למשתמש בצורה מלאה אל תגיד שאינך יודע "
+            "איסור חמור להמציא עובדות שמות תאריכים או היסטוריה אם המידע לא נמצא בכלי החיפוש החיצוני "
+            "אם כלי החיפוש של ויקיפדיה החזיר הודעה שלא נמצא ערך או שיש שגיאה אמור למשתמש בצורה מכובדת שלא מצאת מידע רשמי על כך באנציקלופדיה ושאל אותו אם הוא רוצה שתחפש מושג אחר "
+            "אל תחרטט ואל תמציא פרטים מהראש בשום אופן "
             "אתה מדבר בגובה העיניים בשפה פשוטה זורמת ויומיומית "
             "אל תאשר קבלה של כל משפט אל תגיד אוקיי או הבנתי פשוט תענה ישר ולעניין "
             "איסור מוחלט על סימני פיסוק אל תשתמש בנקודה פסיק מקף שווה אמפרסנד או סימן שאלה בתשובה שלך בשום צורה "
@@ -355,14 +365,14 @@ def ai_chat():
             "תמיד תסיים בשאלה קצרה שמניעה להמשך שיחה"
         )
 
-        tools = [{"type": "function", "function": {"name": "wikipedia_search", "description": "חיפוש במידע אנציקלופדי של ויקיפדיה לקבלת מושגים אישים היסטוריה ומדע", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "המושג או האדם לחיפוש"}}, "required": ["query"]}}}]
+        tools = [{"type": "function", "function": {"name": "wikipedia_search", "description": "חיפוש מידע מדויק באנציקלופדיית ויקיפדיה על מושגים אישים היסטוריה ומקומות", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "הערך או המושג המדויק לחיפוש"}}, "required": ["query"]}}}]
         chat_messages = [{"role": "system", "content": system_prompt}] + get_safe_history(history)
 
         llm_t0 = time.perf_counter()
         chat = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=chat_messages,
-            temperature=0.4,
+            temperature=0.2, # הורדת הטמפרטורה כדי להפוך אותו ליותר עובדתי ופחות יצירתי
             frequency_penalty=0.3, 
             max_tokens=150,
             tools=tools,
@@ -384,7 +394,6 @@ def ai_chat():
             for tool_call in response_message.tool_calls:
                 if tool_call.function.name == "wikipedia_search":
                     args = json.loads(tool_call.function.arguments)
-                    # קריאה לפונקציית החיפוש החדשה של ויקיפדיה
                     search_result = perform_wikipedia_search(call_id, args["query"])
                     history.append({"role": "tool", "tool_call_id": tool_call.id, "name": "wikipedia_search", "content": search_result})
             
@@ -393,7 +402,7 @@ def ai_chat():
             llm_t1 = time.perf_counter()
             chat = client.chat.completions.create(
                 model="llama-3.1-8b-instant",
-                messages=chat_messages, temperature=0.4, frequency_penalty=0.3, max_tokens=150
+                messages=chat_messages, temperature=0.2, frequency_penalty=0.3, max_tokens=150
             )
             log_event(call_id, "groq_llm_pass_2", duration_sec=round(time.perf_counter() - llm_t1, 3))
             
