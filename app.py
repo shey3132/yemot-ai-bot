@@ -44,7 +44,8 @@ session.mount("http://", adapter)
 session.mount("https://", adapter)
 
 # אתחול הלקוח של גוגל
-client = genai.Client(api_key=GEMINI_API_KEY)
+# במקום מה שהיה, תשתמש בזה:
+client = genai.Client(api_key=GEMINI_API_KEY, http_options={'api_version': 'v1'})
 
 # פקודת ההקלטה לימות המשיח - 10 פרמטרים מופרדים בפסיק
 # ParameterName,no,record,[Path],[FileName],[NoMenu],[SaveHangup],Append,[MinLen],[MaxLen]
@@ -193,7 +194,7 @@ def generate_smart_summary(call_id, history):
         prompt = "סכם את השיחה הבאה ב-2 עד 3 נקודות קצרות: נושא מרכזי, בקשת המשתמש ומה סוכם. החזר טקסט בלבד ללא HTML."
         
         response = client.models.generate_content(
-            model='gemini-1.5-flash-002',
+            model='',
             contents=f"{prompt}\n\n{text_log}"
         )
         return response.text.strip()
@@ -317,7 +318,7 @@ def ai_chat():
 
         llm_t0 = time.perf_counter()
         response = client.models.generate_content(
-            model='gemini-1.5-flash-002',
+            model='',
             contents=contents,
             config=config
         )
@@ -345,7 +346,7 @@ def ai_chat():
                     
             llm_t1 = time.perf_counter()
             response = client.models.generate_content(
-                model='gemini-1.5-flash-002',
+                model='',
                 contents=contents,
                 config=config
             )
