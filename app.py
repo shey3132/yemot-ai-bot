@@ -31,7 +31,6 @@ logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
 def log_event(call_id, event_name, **kwargs):
-    """ הפקת לוגים בפורמט JSON לטובת כלי ניטור """
     log_data = {"call_id": call_id, "event": event_name, "timestamp": time.time()}
     log_data.update(kwargs)
     logger.info(json.dumps(log_data))
@@ -49,12 +48,10 @@ client = Groq(api_key=GROQ_API_KEY, timeout=20.0)
 RECORD_COMMAND = "user_audio,no,record,,,yes,yes,no,1,120"
 DB_FILE = "chat_memory.db"
 
-# מטמון מוגן לחיפושים ברשת
 search_cache = {}
 global_cache_lock = Lock()
 query_locks = defaultdict(Lock)
 
-# Pool לשליחת מיילים וכיבוי מסודר
 email_executor = ThreadPoolExecutor(max_workers=10)
 atexit.register(lambda: email_executor.shutdown(wait=False))
 
@@ -112,47 +109,30 @@ def delete_chat_data(caller_id):
 
 
 def clean_text(text):
-    """
-    פונקציה קריטית לימות המשיח! מנקה לחלוטין כל סימן שעשוי לשבור את ה-TTS.
-    רווחים יחליפו נקודות, מקפים, פסיקים, סימני שווה ואמפרסנד.
-    """
     if not text:
         return ""
-    # 1. החלפת כל סימני הפיסוק (נקודות, מקפים, שווה, אמפרסנד וכו') ברווח
     text = re.sub(r'[\.\-\=&,\?!:;_\(\)\[\]\{\}\"\']', ' ', text)
-    
-    # 2. הסרת כל תו שאינו עברית, אנגלית, מספר או רווח
     text = re.sub(r'[^\u0590-\u05FFa-zA-Z0-9\s]', '', text)
-    
-    # 3. צמצום רווחים כפולים לרווח אחד כדי שהטקסט יקרא בצורה רציפה
     return " ".join(text.split())
 
 
 def get_safe_history(history, target_len=12):
-    """ ניהול היסטוריית שיחה בטוחה ומניעת שבירת ה-API של מודל השפה. """
     if len(history) <= target_len:
         return history
-    
     sliced = history[-target_len:]
     while sliced and sliced[0]["role"] in ["tool", "assistant"]:
         if sliced[0]["role"] == "assistant" and "tool_calls" not in sliced[0]:
             break
         sliced.pop(0)
-        
     return sliced if sliced else history[-2:]
 
 
 def perform_wikipedia_search(call_id, query):
-    """
-    חיפוש משופר וגמיש ב-API של ויקיפדיה בעברית כדי למנוע שגיאות זמניות.
-    """
-    # ניקוי בסיסי של שאילתת החיפוש מרעשים
     query = re.sub(r'[^\u0590-\u05FFa-zA-Z0-9\s]', ' ', query).strip()
     if not query:
         return "לא צוין מושג תקין לחיפוש"
 
     now = time.time()
-    
     with global_cache_lock:
         keys_to_delete = [k for k, v in search_cache.items() if now - v['time'] > 300]
         for k in keys_to_delete:
@@ -179,7 +159,6 @@ def perform_wikipedia_search(call_id, query):
             
             search_results = search_data.get("query", {}).get("search", [])
             
-            # אם לא נמצא, ננסה להוריד מילים קצרות או מילות קישור כדי להרחיב את החיפוש
             if not search_results and " " in query:
                 words = [w for w in query.split() if len(w) > 2]
                 if words:
@@ -217,14 +196,12 @@ def perform_wikipedia_search(call_id, query):
                 return "הערך קיים אך הוא ריק מתוכן"
                 
             short_extract = extract[:650]
-            final_result = f"מתוך ויקיפדיה על {page_title}  {short_extract}"
+            final_result = f"מתוך ויקיפדיה על {page_title} {short_extract}"
             final_result = clean_text(final_result)
             
             log_event(call_id, "wikipedia_search_success", duration_sec=round(time.perf_counter() - t0, 3), query=query)
-            
             with global_cache_lock:
                 search_cache[query] = {'result': final_result, 'time': time.time()}
-                
             return final_result
             
         except Exception as e:
@@ -252,11 +229,9 @@ def generate_smart_summary(call_id, history):
 def send_summary_email(call_id, caller_id, history_copy, name):
     if not GOOGLE_SCRIPT_URL or not TARGET_EMAIL or not history_copy:
         return
-        
     try:
         raw_summary = generate_smart_summary(call_id, history_copy) if len(history_copy) > 5 else "שיחה קצרה מדי."
         safe_summary = html.escape(raw_summary)
-            
         safe_name = html.escape((name or "משתמש לא ידוע")[:100])
         safe_caller_id = html.escape((caller_id or "לא חסוי")[:50])
         subject = f"📄 סיכום שיחה מלא - נועם AI: {safe_name} ({safe_caller_id})"
@@ -282,10 +257,8 @@ def send_summary_email(call_id, caller_id, history_copy, name):
                 body += f'<div style="margin-bottom: 15px; padding: 12px 15px; background-color: {color_bg}; border-right: 4px solid {color_border}; border-radius: 4px;"><strong>{role_display}:</strong><br>{content}</div>'
         
         body += "</div></div>"
-        
         session.post(GOOGLE_SCRIPT_URL, json={"to": TARGET_EMAIL, "subject": subject, "htmlBody": body}, timeout=15)
         log_event(call_id, "email_sent_success")
-        
     except Exception as e:
         log_event(call_id, "email_send_error", error=str(e))
 
@@ -310,7 +283,6 @@ def ai_chat():
     call_id = request.values.get('ApiCallId', 'unknown_call')
     
     log_event(call_id, "incoming_request")
-    
     history, known_name = get_chat_data(caller_id)
 
     if request.values.get('hangup') == 'yes':
@@ -351,29 +323,28 @@ def ai_chat():
 
         history.append({"role": "user", "content": user_text})
 
-        # עדכון הנחיות ה-Prompt למניעת הזיות והמצאת נתונים
+        # --- ההנחיה המעודכנת: להסתמך קודם כל על ידע פנימי ---
         system_prompt = (
-            "אתה נועם עוזר קולי חכם המדבר בטלפון עם משתמש "
-            "איסור חמור להמציא עובדות שמות תאריכים או היסטוריה אם המידע לא נמצא בכלי החיפוש החיצוני "
-            "אם כלי החיפוש של ויקיפדיה החזיר הודעה שלא נמצא ערך או שיש שגיאה אמור למשתמש בצורה מכובדת שלא מצאת מידע רשמי על כך באנציקלופדיה ושאל אותו אם הוא רוצה שתחפש מושג אחר "
-            "אל תחרטט ואל תמציא פרטים מהראש בשום אופן "
-            "אתה מדבר בגובה העיניים בשפה פשוטה זורמת ויומיומית "
-            "אל תאשר קבלה של כל משפט אל תגיד אוקיי או הבנתי פשוט תענה ישר ולעניין "
-            "איסור מוחלט על סימני פיסוק אל תשתמש בנקודה פסיק מקף שווה אמפרסנד או סימן שאלה בתשובה שלך בשום צורה "
-            "השתמש אך ורק באותיות ורווחים "
-            "אם יש צורך במספרים קרא אותם במילים למשל מאה במקום 100 "
-            "תמיד תסיים בשאלה קצרה שמניעה להמשך שיחה"
+            "You are Noam, a smart AI assistant on a phone call. "
+            "CRITICAL RULES FOR FUNCTION CALLS: When you decide to call a tool/function, output ONLY the valid JSON tool call. Never mix thoughts, sentences, or bracketed Hebrew text inside or outside the function arguments. "
+            "KNOWLEDGE RULE: ALWAYS rely on your vast internal knowledge first. ONLY call the wikipedia_search tool if you are completely unsure about a specific date, name, or niche topic. If you know the answer, do not use the tool. "
+            "RULES FOR SPEECH RESPONSE: Speak warmly and naturally in Hebrew. Never make up facts. "
+            "Strictly do not use any punctuation marks like periods, commas, question marks, or dashes. Use letters and spaces only. "
+            "If a tool fails or returns no results, tell the user politely that you couldn't find the information and ask for another concept. "
+            "Always end your final spoken response with a short question to keep the conversation going."
         )
 
-        tools = [{"type": "function", "function": {"name": "wikipedia_search", "description": "חיפוש מידע מדויק באנציקלופדיית ויקיפדיה על מושגים אישים היסטוריה ומקומות", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "הערך או המושג המדויק לחיפוש"}}, "required": ["query"]}}}]
+        # --- הגדרת הכלי המעודכנת: לפנות רק כשלא בטוחים ---
+        tools = [{"type": "function", "function": {"name": "wikipedia_search", "description": "USE ONLY WHEN UNSURE. Search Wikipedia to verify facts, definitions, or historical data that you do not already know from your internal memory.", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "The exact term to search for in Hebrew"}}, "required": ["query"]}}}]
+        
         chat_messages = [{"role": "system", "content": system_prompt}] + get_safe_history(history)
 
         llm_t0 = time.perf_counter()
         chat = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=chat_messages,
-            temperature=0.2, # הורדת הטמפרטורה כדי להפוך אותו ליותר עובדתי ופחות יצירתי
-            frequency_penalty=0.3, 
+            temperature=0.1, 
+            frequency_penalty=0.2, 
             max_tokens=150,
             tools=tools,
             tool_choice="auto"
@@ -402,7 +373,7 @@ def ai_chat():
             llm_t1 = time.perf_counter()
             chat = client.chat.completions.create(
                 model="llama-3.1-8b-instant",
-                messages=chat_messages, temperature=0.2, frequency_penalty=0.3, max_tokens=150
+                messages=chat_messages, temperature=0.1, frequency_penalty=0.2, max_tokens=150
             )
             log_event(call_id, "groq_llm_pass_2", duration_sec=round(time.perf_counter() - llm_t1, 3))
             
