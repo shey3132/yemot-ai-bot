@@ -193,7 +193,7 @@ def generate_smart_summary(call_id, history):
         prompt = "סכם את השיחה הבאה ב-2 עד 3 נקודות קצרות: נושא מרכזי, בקשת המשתמש ומה סוכם. החזר טקסט בלבד ללא HTML."
         
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-1.5-flash-002',
             contents=f"{prompt}\n\n{text_log}"
         )
         return response.text.strip()
@@ -317,7 +317,7 @@ def ai_chat():
 
         llm_t0 = time.perf_counter()
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-1.5-flash-002',
             contents=contents,
             config=config
         )
@@ -345,7 +345,7 @@ def ai_chat():
                     
             llm_t1 = time.perf_counter()
             response = client.models.generate_content(
-                model='gemini-1.5-flash',
+                model='gemini-1.5-flash-002',
                 contents=contents,
                 config=config
             )
