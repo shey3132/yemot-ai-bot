@@ -25,20 +25,21 @@ app = Flask(__name__)
 # --- הגדרות סביבה ---
 YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GEMINI_API_KEY_2 = os.environ.get("GEMINI_API_KEY_2")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL")
 TARGET_EMAIL = os.environ.get("TARGET_EMAIL")
 
-# מודל הדגל המעודכן של ה-SDK החדש לביצועים מקסימליים ומניעת 404
+# מודלים
 MODEL_NAME = "gemini-2.5-flash"
+GROQ_GEMMA_MODEL = "gemma2-9b-it"
+GROQ_WHISPER_MODEL = "whisper-large-v3-turbo"
 
 # פונקציית לוגים אמינה שמדפיסה מיד למסוף של Render
 def log_event(call_id, event_name, **kwargs):
     log_data = {"call_id": call_id, "event": event_name, "timestamp": time.time()}
     log_data.update(kwargs)
     print(json.dumps(log_data), flush=True)
-
-# אתחול הלקוח של גוגל
-client = genai.Client(api_key=GEMINI_API_KEY)
 
 session = requests.Session()
 retry_strategy = Retry(total=3, backoff_factor=0.3, status_forcelist=[429, 500, 502, 503, 504])
@@ -105,50 +106,131 @@ def delete_chat_data(caller_id):
 def clean_text(text):
     if not text:
         return ""
-    # הסרת כל סימני הבקרה והפיסוק האסורים בימות המשיח
     text = re.sub(r'[\.\-\=&,\?!:;_\(\)\[\]\{\}\"\']', ' ', text)
     text = re.sub(r'[^\u0590-\u05FFa-zA-Z0-9\s]', '', text)
     return " ".join(text.split())
 
-def perform_wikipedia_search(call_id, query):
-    query = re.sub(r'[^\u0590-\u05FFa-zA-Z0-9\s]', ' ', query).strip()
-    if not query: return "לא צוין מושג תקין לחיפוש"
-    
-    with query_locks[query]:
-        if query in search_cache: return search_cache[query]['result']
-        try:
-            res = session.get("https://he.wikipedia.org/w/api.php", params={"action":"query","list":"search","srsearch":query,"format":"json","srlimit":1}, timeout=10)
-            data = res.json().get("query", {}).get("search", [])
-            if not data: return "לא נמצא מידע"
-            title = data[0]["title"]
-            res = session.get("https://he.wikipedia.org/w/api.php", params={"action":"query","prop":"extracts","exintro":True,"explaintext":True,"titles":title,"format":"json"}, timeout=10)
-            pages = res.json().get("query", {}).get("pages", {})
-            page_id = list(pages.keys())[0]
-            extract = pages[page_id].get("extract", "")[:600]
-            result = clean_text(f"ויקיפדיה על {title} {extract}")
-            search_cache[query] = {'result': result, 'time': time.time()}
-            return result
-        except Exception as e:
-            log_event(call_id, "wikipedia_error", error=str(e))
-            return "תקלה בחיפוש בויקיפדיה"
+def clean_html_markdown(text):
+    if not text: return ""
+    text = text.replace("```html", "").replace("```", "")
+    return text.strip()
 
 def generate_smart_summary(call_id, history):
-    try:
-        text_log = "\n".join([f"{msg['role']}: {msg.get('content', '')}" for msg in history if 'tool_calls' not in msg])
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=f"סכם את השיחה הטלפונית הבאה בנקודות קצרות וברורות:\n{text_log}"
-        )
-        return response.text.strip()
-    except Exception as e:
-        log_event(call_id, "summary_generation_failed", error=str(e))
-        return "לא ניתן להפיק תקציר עבור שיחה זו"
+    gemini_keys = [k for k in [GEMINI_API_KEY, GEMINI_API_KEY_2] if k]
+    text_log = "\n".join([f"{msg['role']}: {msg.get('content', '')}" for msg in history if 'tool_calls' not in msg])
+    
+    prompt = "סכם את השיחה הטלפונית הבאה בנקודות קצרות וברורות בעברית. החזר אך ורק קוד HTML נקי המשתמש בתגיות <ul> ו-<li> ללא תגיות html או body חיצוניות וללא סימוני קוד של מפתחים."
+
+    for k in gemini_keys:
+        try:
+            local_client = genai.Client(api_key=k)
+            response = local_client.models.generate_content(
+                model=MODEL_NAME,
+                contents=f"{prompt}\n\n{text_log}"
+            )
+            return clean_html_markdown(response.text)
+        except:
+            continue
+            
+    if GROQ_API_KEY:
+        try:
+            gemma_url = "https://api.groq.com/openai/v1/chat/completions"
+            payload = {
+                "model": GROQ_GEMMA_MODEL,
+                "messages": [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": text_log}
+                ]
+            }
+            res = session.post(gemma_url, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=payload, timeout=15)
+            return clean_html_markdown(res.json()['choices'][0]['message']['content'])
+        except: pass
+        
+    return "<ul><li>לא ניתן היה להפיק תקציר אוטומטי עבור שיחה זו</li></ul>"
 
 def send_summary_email(call_id, caller_id, history_copy, name):
     if not GOOGLE_SCRIPT_URL or not TARGET_EMAIL: return
     try:
-        raw_summary = generate_smart_summary(call_id, history_copy)
-        session.post(GOOGLE_SCRIPT_URL, json={"to": TARGET_EMAIL, "subject": f"סיכום שיחה מפורט - {name or caller_id}", "htmlBody": raw_summary}, timeout=10)
+        raw_summary_html = generate_smart_summary(call_id, history_copy)
+        
+        # בניית מקטע התמלול המעוצב ב-HTML
+        transcript_elements = []
+        for msg in history_copy:
+            if 'tool_calls' in msg or msg.get('role') == 'system':
+                continue
+            role = msg.get('role')
+            content = msg.get('content', '')
+            
+            if role == 'user':
+                label = "👤 משתמש"
+                css_class = "msg-user"
+                if content == "[קובץ שמע]":
+                    content = "<i>🎙️ הודעה קולית (התקבלה במערכת)</i>"
+            else:
+                label = "🤖 נועם (עוזר קולי)"
+                css_class = "msg-assistant"
+            
+            elem = f'''
+            <div class="msg {css_class}">
+                <div class="role-label">{label}</div>
+                <div>{content}</div>
+            </div>
+            '''
+            transcript_elements.append(elem)
+            
+        transcript_html = "\n".join(transcript_elements)
+        display_name = name or caller_id
+
+        # תבנית המייל המעוצבת קומפלט
+        full_email_body = f'''
+        <!DOCTYPE html>
+        <html lang="he" dir="rtl">
+        <head>
+            <meta charset="UTF-8">
+            <style>
+                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; color: #333; margin: 0; padding: 20px; direction: rtl; text-align: right; }}
+                .container {{ max-width: 650px; background: #ffffff; margin: 0 auto; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-top: 6px solid #4A90E2; }}
+                .header {{ text-align: center; border-bottom: 2px solid #eaedf2; padding-bottom: 20px; margin-bottom: 25px; }}
+                .header h1 {{ color: #2C3E50; margin: 0; font-size: 24px; }}
+                .meta-info {{ font-size: 13px; color: #7f8c8d; margin-top: 8px; }}
+                .section-title {{ font-size: 18px; color: #2980b9; margin-top: 30px; margin-bottom: 15px; border-right: 4px solid #2980b9; padding-right: 10px; font-weight: bold; }}
+                .summary-box {{ background-color: #f8f9fa; border-right: 4px solid #2ecc71; padding: 15px 20px; border-radius: 6px; line-height: 1.6; font-size: 15px; }}
+                .summary-box ul {{ margin: 0; padding-right: 20px; }}
+                .summary-box li {{ margin-bottom: 8px; }}
+                .transcript-container {{ margin-top: 20px; display: flex; flex-direction: column; }}
+                .msg {{ margin-bottom: 15px; padding: 12px 15px; border-radius: 8px; line-height: 1.5; max-width: 85%; display: block; clear: both; }}
+                .msg-user {{ background-color: #e8f4fd; border-right: 4px solid #3498db; float: right; margin-right: 0; margin-left: auto; }}
+                .msg-assistant {{ background-color: #f0f4f1; border-right: 4px solid #27ae60; float: left; margin-left: 0; margin-right: auto; }}
+                .role-label {{ font-weight: bold; font-size: 12px; margin-bottom: 5px; color: #555; }}
+                .footer {{ text-align: center; font-size: 12px; color: #bdc3c7; margin-top: 40px; border-top: 1px solid #eaedf2; padding-top: 15px; clear: both; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>📋 סיכום שיחה טלפונית - נועם עוזר קולי</h1>
+                    <div class="meta-info">מתקשר: <strong>{display_name}</strong> | מזהה שיחה: {call_id}</div>
+                </div>
+                
+                <div class="section-title">📌 תקציר המנהלים (סיכום השיחה)</div>
+                <div class="summary-box">
+                    {raw_summary_html}
+                </div>
+                
+                <div class="section-title">💬 תמלול מהלך השיחה</div>
+                <div class="transcript-container">
+                    {transcript_html}
+                </div>
+                
+                <div class="footer">
+                    נשלח אוטומטית על ידי מערכת ה-AI של נועם העוזר הקולי
+                </div>
+            </div>
+        </body>
+        </html>
+        '''
+
+        session.post(GOOGLE_SCRIPT_URL, json={"to": TARGET_EMAIL, "subject": f"סיכום שיחה מפורט - {display_name}", "htmlBody": full_email_body}, timeout=10)
         log_event(call_id, "email_sent_successfully")
     except Exception as e:
         log_event(call_id, "email_sending_failed", error=str(e))
@@ -175,7 +257,7 @@ def ai_chat():
     audio_path = request.values.getlist('user_audio')
     if not audio_path:
         log_event(call_id, "first_greeting_prompt")
-        return Response(f"read=t-שלום כאן נועם העוזר הקולי שלכם אנא דברו לאחר הצליל={RECORD_COMMAND}", mimetype='text/plain')
+        return Response(f"read=t-שלום כאן נועם אנא דברו לאחר הצליל={RECORD_COMMAND}", mimetype='text/plain')
 
     try:
         log_event(call_id, "downloading_audio_file", path=audio_path[-1])
@@ -189,46 +271,106 @@ def ai_chat():
             "Use only clear Hebrew letters and spaces. End your speech response with a brief natural question."
         )
         
-        contents = [types.Content(role='user' if h['role'] == 'user' else 'model', parts=[types.Part.from_text(h['content'])]) for h in history]
+        contents = [types.Content(role='user' if h['role'] == 'user' else 'model', parts=[types.Part(text=h['content'])]) for h in history]
         contents.append(types.Content(role="user", parts=[
             types.Part.from_bytes(data=audio_res.content, mime_type="audio/wav"),
-            types.Part.from_text(text="הקשב לקובץ השמע המצורף וענה למשתמש בעברית ללא סימני פיסוק כלל.")
+            types.Part(text="הקשב לקובץ השמע המצורף וענה למשתמש בעברית ללא סימני פיסוק כלל.")
         ]))
 
-        log_event(call_id, "sending_to_gemini_api")
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=contents,
-            config=types.GenerateContentConfig(system_instruction=system_prompt, tools=[wikipedia_search])
-        )
-        
-        if response.function_calls:
-            call = response.function_calls[0]
-            log_event(call_id, "tool_use_triggered", function_name=call.name, args=call.args)
-            res = perform_wikipedia_search(call_id, call.args.get("query", ""))
-            
-            contents.append(response.candidates[0].content)
-            contents.append(types.Content(role="user", parts=[
-                types.Part.from_function_response(name="wikipedia_search", response={"result": res})
-            ]))
-            
-            log_event(call_id, "sending_tool_response_back_to_gemini")
-            response = client.models.generate_content(
-                model=MODEL_NAME, 
-                contents=contents,
-                config=types.GenerateContentConfig(system_instruction=system_prompt)
-            )
+        gemini_keys = [k for k in [GEMINI_API_KEY, GEMINI_API_KEY_2] if k]
+        response_text = None
+        user_content_for_history = "[קובץ שמע]"
 
-        ai_reply = clean_text(response.text)
-        log_event(call_id, "gemini_response_success", reply=ai_reply)
+        # שלב 1: ניסיון מול מפתחות ג'מיני הזמינים
+        for idx, current_key in enumerate(gemini_keys):
+            try:
+                log_event(call_id, f"trying_gemini_api_key_{idx+1}")
+                local_client = genai.Client(api_key=current_key)
+                response = local_client.models.generate_content(
+                    model=MODEL_NAME,
+                    contents=contents,
+                    config=types.GenerateContentConfig(system_instruction=system_prompt, tools=[wikipedia_search])
+                )
+                
+                if response.function_calls:
+                    call = response.function_calls[0]
+                    log_event(call_id, f"tool_use_triggered_key_{idx+1}", function_name=call.name, args=call.args)
+                    res = perform_wikipedia_search(call_id, call.args.get("query", ""))
+                    
+                    contents.append(response.candidates[0].content)
+                    contents.append(types.Content(role="user", parts=[
+                        types.Part.from_function_response(name="wikipedia_search", response={"result": res})
+                    ]))
+                    
+                    log_event(call_id, f"sending_tool_response_back_key_{idx+1}")
+                    response = local_client.models.generate_content(
+                        model=MODEL_NAME, 
+                        contents=contents,
+                        config=types.GenerateContentConfig(system_instruction=system_prompt)
+                    )
+
+                response_text = response.text
+                log_event(call_id, f"gemini_key_{idx+1}_success")
+                break
+            except Exception as gemini_err:
+                log_event(call_id, f"gemini_key_{idx+1}_failed", error=str(gemini_err))
+                continue
+
+        # שלב 2: פתרון קצה (Fallback) במידה וג'מיני נכשלו - מעבר ל-Groq
+        if not response_text:
+            if GROQ_API_KEY:
+                try:
+                    log_event(call_id, "groq_fallback_triggered")
+                    
+                    # א. תמלול קובץ השמע באמצעות Groq Whisper
+                    log_event(call_id, "groq_whisper_transcription_started")
+                    whisper_url = "https://api.groq.com/openai/v1/audio/transcriptions"
+                    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+                    files = {"file": ("audio.wav", audio_res.content, "audio/wav")}
+                    data = {"model": GROQ_WHISPER_MODEL}
+                    
+                    whisper_res = session.post(whisper_url, headers=headers, files=files, data=data, timeout=15)
+                    whisper_res.raise_for_status()
+                    user_transcription = whisper_res.json().get("text", "")
+                    log_event(call_id, "groq_whisper_success", text=user_transcription)
+                    
+                    # שמירת התמלול הטקסטואלי האמיתי לצורך היסטוריית המייל
+                    user_content_for_history = f"🎙️ {user_transcription}"
+                    
+                    # ב. שליחת ההיסטוריה והתמלול החדש למודל Gemma ב-Groq
+                    log_event(call_id, "groq_gemma_generation_started")
+                    gemma_url = "https://api.groq.com/openai/v1/chat/completions"
+                    
+                    messages = [{"role": "system", "content": system_prompt}]
+                    for h in history:
+                        messages.append({"role": h['role'], "content": h['content']})
+                    messages.append({"role": "user", "content": user_transcription})
+                    
+                    gemma_payload = {
+                        "model": GROQ_GEMMA_MODEL,
+                        "messages": messages
+                    }
+                    
+                    gemma_res = session.post(gemma_url, headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}, json=gemma_payload, timeout=15)
+                    gemma_res.raise_for_status()
+                    
+                    response_text = gemma_res.json()['choices'][0]['message']['content']
+                    log_event(call_id, "groq_gemma_success")
+                except Exception as groq_err:
+                    log_event(call_id, "groq_fallback_failed", error=str(groq_err))
+                    raise Exception("All API keys and Groq fallback exhausted")
+            else:
+                raise Exception("Gemini failed and GROQ_API_KEY is missing")
+
+        ai_reply = clean_text(response_text)
+        log_event(call_id, "final_response_success", reply=ai_reply)
         
-        history.extend([{"role": "user", "content": "[קובץ שמע]"}, {"role": "assistant", "content": ai_reply}])
+        history.extend([{"role": "user", "content": user_content_for_history}, {"role": "assistant", "content": ai_reply}])
         save_chat_data(caller_id, history, known_name)
         
         return Response(f"read=t-{ai_reply}={RECORD_COMMAND}", mimetype='text/plain')
         
     except Exception as e:
-        # הדפסת ה-Traceback המלא ישירות למסוף כדי שתראה בדיוק מה נכשל
         error_trace = traceback.format_exc()
         print(f"--- CRITICAL ERROR FOR CALL {call_id} ---", file=sys.stderr)
         print(error_trace, file=sys.stderr, flush=True)
