@@ -112,8 +112,31 @@ def clean_text(text):
 
 def clean_html_markdown(text):
     if not text: return ""
-    text = text.replace("```html", "").replace("```", "")
+    text = text.replace("```html", "").replace("
+```", "")
     return text.strip()
+
+def perform_wikipedia_search(call_id, query):
+    query = re.sub(r'[^\u0590-\u05FFa-zA-Z0-9\s]', ' ', query).strip()
+    if not query: return "לא צוין מושג תקין לחיפוש"
+    
+    with query_locks[query]:
+        if query in search_cache: return search_cache[query]['result']
+        try:
+            res = session.get("https://he.wikipedia.org/w/api.php", params={"action":"query","list":"search","srsearch":query,"format":"json","srlimit":1}, timeout=10)
+            data = res.json().get("query", {}).get("search", [])
+            if not data: return "לא נמצא מידע"
+            title = data[0]["title"]
+            res = session.get("https://he.wikipedia.org/w/api.php", params={"action":"query","prop":"extracts","exintro":True,"explaintext":True,"titles":title,"format":"json"}, timeout=10)
+            pages = res.json().get("query", {}).get("pages", {})
+            page_id = list(pages.keys())[0]
+            extract = pages[page_id].get("extract", "")[:600]
+            result = clean_text(f"ויקיפדיה על {title} {extract}")
+            search_cache[query] = {'result': result, 'time': time.time()}
+            return result
+        except Exception as e:
+            log_event(call_id, "wikipedia_error", error=str(e))
+            return "תקלה בחיפוש בויקיפדיה"
 
 def generate_smart_summary(call_id, history):
     gemini_keys = [k for k in [GEMINI_API_KEY, GEMINI_API_KEY_2] if k]
@@ -153,7 +176,7 @@ def send_summary_email(call_id, caller_id, history_copy, name):
     try:
         raw_summary_html = generate_smart_summary(call_id, history_copy)
         
-        # בניית מקטע התמלול המעוצב ב-HTML
+        # בניית מקטע התמלול המעוצב ב-HTML עם אילוץ ירידת שורה קשיחה
         transcript_elements = []
         for msg in history_copy:
             if 'tool_calls' in msg or msg.get('role') == 'system':
@@ -171,9 +194,11 @@ def send_summary_email(call_id, caller_id, history_copy, name):
                 css_class = "msg-assistant"
             
             elem = f'''
-            <div class="msg {css_class}">
-                <div class="role-label">{label}</div>
-                <div>{content}</div>
+            <div class="msg-row">
+                <div class="msg {css_class}">
+                    <div class="role-label">{label}</div>
+                    <div>{content}</div>
+                </div>
             </div>
             '''
             transcript_elements.append(elem)
@@ -181,7 +206,7 @@ def send_summary_email(call_id, caller_id, history_copy, name):
         transcript_html = "\n".join(transcript_elements)
         display_name = name or caller_id
 
-        # תבנית המייל המעוצבת קומפלט
+        # תבנית המייל המעוצבת
         full_email_body = f'''
         <!DOCTYPE html>
         <html lang="he" dir="rtl">
@@ -197,10 +222,11 @@ def send_summary_email(call_id, caller_id, history_copy, name):
                 .summary-box {{ background-color: #f8f9fa; border-right: 4px solid #2ecc71; padding: 15px 20px; border-radius: 6px; line-height: 1.6; font-size: 15px; }}
                 .summary-box ul {{ margin: 0; padding-right: 20px; }}
                 .summary-box li {{ margin-bottom: 8px; }}
-                .transcript-container {{ margin-top: 20px; display: flex; flex-direction: column; }}
-                .msg {{ margin-bottom: 15px; padding: 12px 15px; border-radius: 8px; line-height: 1.5; max-width: 85%; display: block; clear: both; }}
-                .msg-user {{ background-color: #e8f4fd; border-right: 4px solid #3498db; float: right; margin-right: 0; margin-left: auto; }}
-                .msg-assistant {{ background-color: #f0f4f1; border-right: 4px solid #27ae60; float: left; margin-left: 0; margin-right: auto; }}
+                .transcript-container {{ margin-top: 20px; width: 100%; }}
+                .msg-row {{ width: 100%; clear: both; display: block; margin-bottom: 15px; }}
+                .msg {{ padding: 12px 15px; border-radius: 8px; line-height: 1.5; max-width: 75%; box-sizing: border-box; }}
+                .msg-user {{ background-color: #e8f4fd; border-right: 4px solid #3498db; float: right; text-align: right; }}
+                .msg-assistant {{ background-color: #f0f4f1; border-right: 4px solid #27ae60; float: left; text-align: right; }}
                 .role-label {{ font-weight: bold; font-size: 12px; margin-bottom: 5px; color: #555; }}
                 .footer {{ text-align: center; font-size: 12px; color: #bdc3c7; margin-top: 40px; border-top: 1px solid #eaedf2; padding-top: 15px; clear: both; }}
             </style>
@@ -220,6 +246,7 @@ def send_summary_email(call_id, caller_id, history_copy, name):
                 <div class="section-title">💬 תמלול מהלך השיחה</div>
                 <div class="transcript-container">
                     {transcript_html}
+                    <div style="clear: both;"></div>
                 </div>
                 
                 <div class="footer">
@@ -267,8 +294,11 @@ def ai_chat():
         system_prompt = (
             "You are Noam, a helpful voice assistant on a phone call. "
             "Respond warmly and concisely in Hebrew. "
-            "CRITICAL FORMAT RULE: Do NOT use any punctuation marks whatsoever in your text output. No periods, no commas, no hyphens, no question marks. "
-            "Use only clear Hebrew letters and spaces. End your speech response with a brief natural question."
+            "INTERNAL KNOWLEDGE FIRST: Always answer directly from your own internal knowledge base first. "
+            "ONLY execute a 'wikipedia_search' tool call if you genuinely do not know the answer from your knowledge base, or to prevent hallucination. "
+            "CRITICAL FORMAT RULE: Do NOT use any punctuation marks whatsoever in your text output to the user. No periods, no commas, no hyphens, no question marks. "
+            "Use only clear Hebrew letters and spaces. End your speech response with a brief natural question. "
+            "NEVER output your internal reasoning, thoughts, or any English monologues to the user."
         )
         
         contents = [types.Content(role='user' if h['role'] == 'user' else 'model', parts=[types.Part(text=h['content'])]) for h in history]
@@ -334,7 +364,6 @@ def ai_chat():
                     user_transcription = whisper_res.json().get("text", "")
                     log_event(call_id, "groq_whisper_success", text=user_transcription)
                     
-                    # שמירת התמלול הטקסטואלי האמיתי לצורך היסטוריית המייל
                     user_content_for_history = f"🎙️ {user_transcription}"
                     
                     # ב. שליחת ההיסטוריה והתמלול החדש למודל Gemma ב-Groq
