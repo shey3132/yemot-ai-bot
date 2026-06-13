@@ -30,9 +30,9 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL")
 TARGET_EMAIL = os.environ.get("TARGET_EMAIL")
 
-# מודלים
+# מודלים מעודכנים ויציבים (עודכן ל-Llama 3.1 הרשמי של Groq)
 MODEL_NAME = "gemini-2.5-flash"
-GROQ_GEMMA_MODEL = "gemma2-9b-it"
+GROQ_CHAT_MODEL = "llama-3.1-8b-instant"
 GROQ_WHISPER_MODEL = "whisper-large-v3-turbo"
 
 # פונקציית לוגים אמינה שמדפיסה מיד למסוף של Render
@@ -113,7 +113,8 @@ def clean_text(text):
 def clean_html_markdown(text):
     if not text: 
         return ""
-    text = re.sub(r'```html|```', '', text)
+    text = re.sub(r'```html|
+```', '', text)
     return text.strip()
 
 def perform_wikipedia_search(call_id, query):
@@ -159,13 +160,16 @@ def generate_smart_summary(call_id, history):
         try:
             gemma_url = "https://api.groq.com/openai/v1/chat/completions"
             payload = {
-                "model": GROQ_GEMMA_MODEL,
+                "model": GROQ_CHAT_MODEL,
                 "messages": [
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": text_log}
                 ]
             }
             res = session.post(gemma_url, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=payload, timeout=15)
+            if res.status_code != 200:
+                log_event(call_id, "groq_summary_failed_body", status=res.status_code, body=res.text)
+            res.raise_for_status()
             return clean_html_markdown(res.json()['choices'][0]['message']['content'])
         except: pass
         
@@ -286,24 +290,25 @@ def ai_chat():
 
     try:
         log_event(call_id, "downloading_audio_file", path=audio_path[-1])
-        # כאן הכתובת תוקנה למחרוזת נקייה לחלוטין ללא מרקדאון
         audio_res = session.get("https://www.call2all.co.il/ym/api/DownloadFile", params={"token": YEMOT_TOKEN, "path": f"ivr2:{audio_path[-1]}"}, timeout=20)
         audio_res.raise_for_status()
         
+        # הנחיית מערכת מורחבת לתשובות ארוכות ומפורטות
         system_prompt = (
             "You are Noam, a helpful voice assistant on a phone call. "
-            "Respond warmly and concisely in Hebrew. "
+            "Respond warmly and ELABORATELY in Hebrew. Provide long, comprehensive, and detailed answers. "
+            "Expand significantly on the requested topics instead of being brief or concise. "
             "INTERNAL KNOWLEDGE FIRST: Always answer directly from your own internal knowledge base first. "
             "ONLY execute a 'wikipedia_search' tool call if you genuinely do not know the answer from your knowledge base, or to prevent hallucination. "
             "CRITICAL FORMAT RULE: Do NOT use any punctuation marks whatsoever in your text output to the user. No periods, no commas, no hyphens, no question marks. "
-            "Use only clear Hebrew letters and spaces. End your speech response with a brief natural question. "
+            "Use only clear Hebrew letters and spaces. "
             "NEVER output your internal reasoning, thoughts, or any English monologues to the user."
         )
         
         contents = [types.Content(role='user' if h['role'] == 'user' else 'model', parts=[types.Part(text=h['content'])]) for h in history]
         contents.append(types.Content(role="user", parts=[
             types.Part.from_bytes(data=audio_res.content, mime_type="audio/wav"),
-            types.Part(text="הקשב לקובץ השמע המצורף וענה למשתמש בעברית ללא סימני פיסוק כלל.")
+            types.Part(text="הקשב לקובץ השמע המצורף וענה למשתמש בעברית תשובה ארוכה ומפורטת ללא סימני פיסוק כלל.")
         ]))
 
         gemini_keys = [k for k in [GEMINI_API_KEY, GEMINI_API_KEY_2] if k]
@@ -345,7 +350,7 @@ def ai_chat():
                 log_event(call_id, f"gemini_key_{idx+1}_failed", error=str(gemini_err))
                 continue
 
-        # שלב 2: פתרון קצה (Fallback) במידה וג'מיני נכשלו - מעבר ל-Groq
+        # שלב 2: פתרון קצה (Fallback) במידה וג'מיני נכשלו - מעבר ל-Groq המעודכן
         if not response_text:
             if GROQ_API_KEY:
                 try:
@@ -364,7 +369,7 @@ def ai_chat():
                     
                     user_content_for_history = f"🎙️ {user_transcription}"
                     
-                    log_event(call_id, "groq_gemma_generation_started")
+                    log_event(call_id, "groq_chat_generation_started")
                     gemma_url = "https://api.groq.com/openai/v1/chat/completions"
                     
                     messages = [{"role": "system", "content": system_prompt}]
@@ -373,15 +378,17 @@ def ai_chat():
                     messages.append({"role": "user", "content": user_transcription})
                     
                     gemma_payload = {
-                        "model": GROQ_GEMMA_MODEL,
+                        "model": GROQ_CHAT_MODEL,
                         "messages": messages
                     }
                     
                     gemma_res = session.post(gemma_url, headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}, json=gemma_payload, timeout=15)
+                    if gemma_res.status_code != 200:
+                        log_event(call_id, "groq_chat_failed_body", status=gemma_res.status_code, body=gemma_res.text)
                     gemma_res.raise_for_status()
                     
                     response_text = gemma_res.json()['choices'][0]['message']['content']
-                    log_event(call_id, "groq_gemma_success")
+                    log_event(call_id, "groq_chat_success")
                 except Exception as groq_err:
                     log_event(call_id, "groq_fallback_failed", error=str(groq_err))
                     raise Exception("All API keys and Groq fallback exhausted")
@@ -400,9 +407,21 @@ def ai_chat():
         error_trace = traceback.format_exc()
         print(f"--- CRITICAL ERROR FOR CALL {call_id} ---", file=sys.stderr)
         print(error_trace, file=sys.stderr, flush=True)
-        
         log_event(call_id, "global_exception_caught", error=str(e))
-        return Response(f"read=t-אנא חזרו על הדברים שנית לאחר הצליל={RECORD_COMMAND}", mimetype='text/plain')
+        
+        # זיהוי סוג השגיאה והמרתה למשפט הגיוני, מכובד ונקי מסימני פיסוק
+        err_msg_lower = str(e).lower()
+        if "exhausted" in err_msg_lower or "429" in err_msg_lower or "limit" in err_msg_lower:
+            friendly_message = "חלקה שגיאה זמנית במערכת עקב עומס בקשות רב מדי אנא נסו להתקשר שוב בעוד מספר דקות"
+        elif "api key" in err_msg_lower or "401" in err_msg_lower or "unauthorized" in err_msg_lower:
+            friendly_message = "חלקה שגיאת אימות במפתחות הגישה של השרת אנא פנו למנהל המערכת לעדכון המפתחות"
+        elif "timeout" in err_msg_lower or "connection" in err_msg_lower:
+            friendly_message = "החיבור לשרתי השרות נתקע עקב בעיית תקשורת זמנית אנא נסו שוב"
+        else:
+            friendly_message = "חלקה שגיאה טכנית זמנית בעיבוד הנתונים של השיחה אנא נסו שוב מאוחר יותר"
+            
+        friendly_message = clean_text(friendly_message)
+        return Response(f"read=t-{friendly_message}", mimetype='text/plain')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
