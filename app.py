@@ -30,7 +30,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL")
 TARGET_EMAIL = os.environ.get("TARGET_EMAIL")
 
-# מודלים מעודכנים ויציבים (עודכן ל-Llama 3.1 הרשמי של Groq)
+# מודלים מעודכנים ויציבים - ה-8B נבחר כגיבוי החינמי העמיד ביותר מפני חסימות מכסה
 MODEL_NAME = "gemini-2.5-flash"
 GROQ_CHAT_MODEL = "llama-3.1-8b-instant"
 GROQ_WHISPER_MODEL = "whisper-large-v3-turbo"
@@ -293,7 +293,6 @@ def ai_chat():
         audio_res = session.get("https://www.call2all.co.il/ym/api/DownloadFile", params={"token": YEMOT_TOKEN, "path": f"ivr2:{audio_path[-1]}"}, timeout=20)
         audio_res.raise_for_status()
         
-        # הנחיית מערכת מורחבת לתשובות ארוכות ומפורטות
         system_prompt = (
             "You are Noam, a helpful voice assistant on a phone call. "
             "Respond warmly and ELABORATELY in Hebrew. Provide long, comprehensive, and detailed answers. "
@@ -350,7 +349,7 @@ def ai_chat():
                 log_event(call_id, f"gemini_key_{idx+1}_failed", error=str(gemini_err))
                 continue
 
-        # שלב 2: פתרון קצה (Fallback) במידה וג'מיני נכשלו - מעבר ל-Groq המעודכן
+        # שלב 2: פתרון קצה (Fallback) במידה וג'מיני נכשלו - מעבר ל-Groq עם מודל ה-8B העמיד
         if not response_text:
             if GROQ_API_KEY:
                 try:
@@ -370,24 +369,24 @@ def ai_chat():
                     user_content_for_history = f"🎙️ {user_transcription}"
                     
                     log_event(call_id, "groq_chat_generation_started")
-                    gemma_url = "https://api.groq.com/openai/v1/chat/completions"
+                    chat_url = "https://api.groq.com/openai/v1/chat/completions"
                     
                     messages = [{"role": "system", "content": system_prompt}]
                     for h in history:
                         messages.append({"role": h['role'], "content": h['content']})
                     messages.append({"role": "user", "content": user_transcription})
                     
-                    gemma_payload = {
+                    payload = {
                         "model": GROQ_CHAT_MODEL,
                         "messages": messages
                     }
                     
-                    gemma_res = session.post(gemma_url, headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}, json=gemma_payload, timeout=15)
-                    if gemma_res.status_code != 200:
-                        log_event(call_id, "groq_chat_failed_body", status=gemma_res.status_code, body=gemma_res.text)
-                    gemma_res.raise_for_status()
+                    chat_res = session.post(chat_url, headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=15)
+                    if chat_res.status_code != 200:
+                        log_event(call_id, "groq_chat_failed_body", status=chat_res.status_code, body=chat_res.text)
+                    chat_res.raise_for_status()
                     
-                    response_text = gemma_res.json()['choices'][0]['message']['content']
+                    response_text = chat_res.json()['choices'][0]['message']['content']
                     log_event(call_id, "groq_chat_success")
                 except Exception as groq_err:
                     log_event(call_id, "groq_fallback_failed", error=str(groq_err))
@@ -409,7 +408,6 @@ def ai_chat():
         print(error_trace, file=sys.stderr, flush=True)
         log_event(call_id, "global_exception_caught", error=str(e))
         
-        # זיהוי סוג השגיאה והמרתה למשפט הגיוני, מכובד ונקי מסימני פיסוק
         err_msg_lower = str(e).lower()
         if "exhausted" in err_msg_lower or "429" in err_msg_lower or "limit" in err_msg_lower:
             friendly_message = "חלקה שגיאה זמנית במערכת עקב עומס בקשות רב מדי אנא נסו להתקשר שוב בעוד מספר דקות"
