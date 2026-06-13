@@ -113,8 +113,8 @@ def clean_text(text):
 def clean_html_markdown(text):
     if not text: 
         return ""
-    text = re.sub(r'```html|
-```', '', text)
+    # שימוש בשיטה בטוחה שלא שוברת את הציטוטים של הקוד
+    text = text.replace("```html", "").replace("```", "")
     return text.strip()
 
 def perform_wikipedia_search(call_id, query):
@@ -124,11 +124,11 @@ def perform_wikipedia_search(call_id, query):
     with query_locks[query]:
         if query in search_cache: return search_cache[query]['result']
         try:
-            res = session.get("https://he.wikipedia.org/w/api.php", params={"action":"query","list":"search","srsearch":query,"format":"json","srlimit":1}, timeout=10)
+            res = session.get("[https://he.wikipedia.org/w/api.php](https://he.wikipedia.org/w/api.php)", params={"action":"query","list":"search","srsearch":query,"format":"json","srlimit":1}, timeout=10)
             data = res.json().get("query", {}).get("search", [])
             if not data: return "לא נמצא מידע"
             title = data[0]["title"]
-            res = session.get("https://he.wikipedia.org/w/api.php", params={"action":"query","prop":"extracts","exintro":True,"explaintext":True,"titles":title,"format":"json"}, timeout=10)
+            res = session.get("[https://he.wikipedia.org/w/api.php](https://he.wikipedia.org/w/api.php)", params={"action":"query","prop":"extracts","exintro":True,"explaintext":True,"titles":title,"format":"json"}, timeout=10)
             pages = res.json().get("query", {}).get("pages", {})
             page_id = list(pages.keys())[0]
             extract = pages[page_id].get("extract", "")[:600]
@@ -158,7 +158,7 @@ def generate_smart_summary(call_id, history):
             
     if GROQ_API_KEY:
         try:
-            gemma_url = "https://api.groq.com/openai/v1/chat/completions"
+            gemma_url = "[https://api.groq.com/openai/v1/chat/completions](https://api.groq.com/openai/v1/chat/completions)"
             payload = {
                 "model": GROQ_CHAT_MODEL,
                 "messages": [
@@ -290,7 +290,7 @@ def ai_chat():
 
     try:
         log_event(call_id, "downloading_audio_file", path=audio_path[-1])
-        audio_res = session.get("https://www.call2all.co.il/ym/api/DownloadFile", params={"token": YEMOT_TOKEN, "path": f"ivr2:{audio_path[-1]}"}, timeout=20)
+        audio_res = session.get("[https://www.call2all.co.il/ym/api/DownloadFile](https://www.call2all.co.il/ym/api/DownloadFile)", params={"token": YEMOT_TOKEN, "path": f"ivr2:{audio_path[-1]}"}, timeout=20)
         audio_res.raise_for_status()
         
         system_prompt = (
@@ -356,7 +356,7 @@ def ai_chat():
                     log_event(call_id, "groq_fallback_triggered")
                     
                     log_event(call_id, "groq_whisper_transcription_started")
-                    whisper_url = "https://api.groq.com/openai/v1/audio/transcriptions"
+                    whisper_url = "[https://api.groq.com/openai/v1/audio/transcriptions](https://api.groq.com/openai/v1/audio/transcriptions)"
                     headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
                     files = {"file": ("audio.wav", audio_res.content, "audio/wav")}
                     data = {"model": GROQ_WHISPER_MODEL}
@@ -369,7 +369,7 @@ def ai_chat():
                     user_content_for_history = f"🎙️ {user_transcription}"
                     
                     log_event(call_id, "groq_chat_generation_started")
-                    chat_url = "https://api.groq.com/openai/v1/chat/completions"
+                    chat_url = "[https://api.groq.com/openai/v1/chat/completions](https://api.groq.com/openai/v1/chat/completions)"
                     
                     messages = [{"role": "system", "content": system_prompt}]
                     for h in history:
