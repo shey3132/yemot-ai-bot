@@ -286,11 +286,12 @@ def ai_chat():
 
     try:
         log_event(call_id, "downloading_audio_file", path=audio_path[-1])
-        # >>> שורה מתוקנת וחלקה מלינקים משובשים <<<
+        # הורדת קובץ שמע ישירות ובצורה נקייה
         audio_res = session.get("https://www.call2all.co.il/ym/api/DownloadFile", params={"token": YEMOT_TOKEN, "path": f"ivr2:{audio_path[-1]}"}, timeout=20)
         audio_res.raise_for_status()
         
-system_prompt = (
+        # הנחיות ה-AI המעודכנות והקצרות למניעת תשובות ארוכות מדי
+        system_prompt = (
             "You are Noam, a helpful and friendly voice assistant on a phone call. "
             "CRITICAL RULE: Keep your answers VERY SHORT, concise, and conversational. "
             "Respond in 1 to 3 short sentences MAXIMUM per answer. Never give long explanations or lectures. "
@@ -304,7 +305,7 @@ system_prompt = (
         contents = [types.Content(role='user' if h['role'] == 'user' else 'model', parts=[types.Part(text=h['content'])]) for h in history]
         contents.append(types.Content(role="user", parts=[
             types.Part.from_bytes(data=audio_res.content, mime_type="audio/wav"),
-            types.Part(text="הקשב לקובץ השמע המצורף וענה למשתמש בעברית תשובה ארוכה ומפורטת ללא סימני פיסוק כלל.")
+            types.Part(text="הקשב לקובץ השמע המצורף וענה למשתמש בעברית תשובה קצרה מאוד של עד שלושה משפטים וללא סימני פיסוק כלל.")
         ]))
 
         gemini_keys = [k for k in [GEMINI_API_KEY, GEMINI_API_KEY_2] if k]
