@@ -110,7 +110,7 @@ def clean_text(text):
 def clean_html_markdown(text):
     if not text: 
         return ""
-    text = text.replace("```html", "").replace("```", "")
+    text = text.replace("```html", "").replace("\n```", "")
     return text.strip()
 
 def perform_wikipedia_search(call_id, query):
@@ -286,11 +286,15 @@ def ai_chat():
 
     try:
         log_event(call_id, "downloading_audio_file", path=audio_path[-1])
-        # הורדת קובץ שמע ישירות ובצורה נקייה
         audio_res = session.get("https://www.call2all.co.il/ym/api/DownloadFile", params={"token": YEMOT_TOKEN, "path": f"ivr2:{audio_path[-1]}"}, timeout=20)
         audio_res.raise_for_status()
         
-        # הנחיות ה-AI המעודכנות והקצרות למניעת תשובות ארוכות מדי
+        # מנגנון הגנה: וידוא שהקובץ הוא אכן שמע ולא שגיאת טקסט או קובץ שבור/ריק
+        content_type = audio_res.headers.get('Content-Type', '').lower()
+        if 'text' in content_type or 'html' in content_type or len(audio_res.content) < 1000:
+            log_event(call_id, "invalid_audio_file_detected", content_type=content_type, size=len(audio_res.content))
+            raise Exception("Downloaded file from Yemot is corrupted, an error page, or too small")
+            
         system_prompt = (
             "You are Noam, a helpful and friendly voice assistant on a phone call. "
             "CRITICAL RULE: Keep your answers VERY SHORT, concise, and conversational. "
@@ -312,7 +316,7 @@ def ai_chat():
         response_text = None
         user_content_for_history = "[קובץ שמע]"
 
-        # שלב 1: מול Gemini
+        # שלב 1: ניסיון מול מפתחות Gemini ברוטציה
         for idx, current_key in enumerate(gemini_keys):
             try:
                 log_event(call_id, f"trying_gemini_api_key_{idx+1}")
@@ -340,6 +344,11 @@ def ai_chat():
                         config=types.GenerateContentConfig(system_instruction=system_prompt)
                     )
 
+                # הגנה מפני הזיית הודעת הסירוב הפנימית של ג'מיני לשמע
+                temp_text = response.text or ""
+                if "מצטער" in temp_text and "להקשיב" in temp_text:
+                    raise Exception("Gemini hallucinated a file-reading refusal text")
+
                 response_text = response.text
                 log_event(call_id, f"gemini_key_{idx+1}_success")
                 break
@@ -347,7 +356,7 @@ def ai_chat():
                 log_event(call_id, f"gemini_key_{idx+1}_failed", error=str(gemini_err))
                 continue
 
-        # שלב 2: גיבוי Groq
+        # שלב 2: גיבוי מלא ל-Groq (Whisper + Llama) במקרה של כישלון של ג'מיני
         if not response_text:
             if GROQ_API_KEY:
                 try:
@@ -357,7 +366,8 @@ def ai_chat():
                     whisper_url = "https://api.groq.com/openai/v1/audio/transcriptions"
                     headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
                     files = {"file": ("audio.wav", audio_res.content, "audio/wav")}
-                    data = {"model": GROQ_WHISPER_MODEL}
+                    # ✅ תיקון: הוספת language="he" לשיפור תמלול עברית
+                    data = {"model": GROQ_WHISPER_MODEL, "language": "he"}
                     
                     whisper_res = session.post(whisper_url, headers=headers, files=files, data=data, timeout=15)
                     whisper_res.raise_for_status()
