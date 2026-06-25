@@ -6,6 +6,8 @@ import sqlite3
 import sys
 import traceback
 import atexit
+import random
+import string
 from collections import defaultdict
 from contextlib import closing
 from threading import Lock
@@ -14,26 +16,35 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from flask import Flask, request, Response
+from flask import Flask, request, Response, send_file, jsonify
+
 from google import genai
 from google.genai import types
 
 app = Flask(__name__)
 
 # --- הגדרות סביבה ---
-YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-GEMINI_API_KEY_2 = os.environ.get("GEMINI_API_KEY_2")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL")
-TARGET_EMAIL = os.environ.get("TARGET_EMAIL")
+YEMOT_TOKEN        = os.environ.get("YEMOT_TOKEN")
+GEMINI_API_KEY     = os.environ.get("GEMINI_API_KEY")
+GEMINI_API_KEY_2   = os.environ.get("GEMINI_API_KEY_2")
+GROQ_API_KEY       = os.environ.get("GROQ_API_KEY")
+GOOGLE_SCRIPT_URL  = os.environ.get("GOOGLE_SCRIPT_URL")   # לשליחת קוד אימות בלבד
+TARGET_EMAIL       = os.environ.get("TARGET_EMAIL")         # המייל שיקבל קוד אימות
 
-# מודלים 
-MODEL_NAME = "gemini-2.5-flash"
-GROQ_CHAT_MODEL = "llama-3.1-8b-instant"
+# מודלים
+MODEL_NAME        = "gemini-2.5-flash"
+GROQ_CHAT_MODEL   = "llama-3.1-8b-instant"
 GROQ_WHISPER_MODEL = "whisper-large-v3-turbo"
 
-# פונקציית לוגים למסוף של Render
+# קבצים
+ALLOWED_NUMBERS_FILE = "allowed_numbers.txt"
+ADMIN_HTML_FILE      = "admin.html"
+
+# --- אחסון קודי אימות זמניים: {email: (code, expires_at)} ---
+auth_codes = {}
+# --- סשנים פעילים: {token: email} ---
+active_sessions = {}
+
 def log_event(call_id, event_name, **kwargs):
     log_data = {"call_id": call_id, "event": event_name, "timestamp": time.time()}
     log_data.update(kwargs)
@@ -49,8 +60,6 @@ RECORD_COMMAND = "user_audio,no,record,,,yes,yes,no,1,120"
 DB_FILE = "chat_memory.db"
 search_cache = {}
 query_locks = defaultdict(Lock)
-email_executor = ThreadPoolExecutor(max_workers=10)
-atexit.register(lambda: email_executor.shutdown(wait=False))
 
 def init_db():
     with closing(sqlite3.connect(DB_FILE, timeout=30)) as conn:
@@ -64,6 +73,20 @@ def init_db():
                 )
             ''')
 init_db()
+
+def load_allowed_numbers():
+    try:
+        with open(ALLOWED_NUMBERS_FILE, 'r', encoding='utf-8') as f:
+            return [line.strip() for line in f if line.strip()]
+    except FileNotFoundError:
+        return []
+
+def save_allowed_numbers(numbers):
+    with open(ALLOWED_NUMBERS_FILE, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(numbers))
+
+def is_allowed(caller_id):
+    return caller_id in load_allowed_numbers()
 
 def get_chat_data(caller_id):
     try:
@@ -107,16 +130,9 @@ def clean_text(text):
     text = re.sub(r'[^\u0590-\u05FFa-zA-Z0-9\s]', '', text)
     return " ".join(text.split())
 
-def clean_html_markdown(text):
-    if not text: 
-        return ""
-    text = text.replace("```html", "").replace("\n```", "")
-    return text.strip()
-
 def perform_wikipedia_search(call_id, query):
     query = re.sub(r'[^\u0590-\u05FFa-zA-Z0-9\s]', ' ', query).strip()
     if not query: return "לא צוין מושג תקין לחיפוש"
-    
     with query_locks[query]:
         if query in search_cache: return search_cache[query]['result']
         try:
@@ -135,147 +151,118 @@ def perform_wikipedia_search(call_id, query):
             log_event(call_id, "wikipedia_error", error=str(e))
             return "תקלה בחיפוש בויקיפדיה"
 
-def generate_smart_summary(call_id, history):
-    gemini_keys = [k for k in [GEMINI_API_KEY, GEMINI_API_KEY_2] if k]
-    text_log = "\n".join([f"{msg['role']}: {msg.get('content', '')}" for msg in history if 'tool_calls' not in msg])
-    
-    prompt = "סכם את השיחה הטלפונית הבאה בנקודות קצרות וברורות בעברית. החזר אך ורק קוד HTML נקי המשתמש בתגיות <ul> ו-<li> ללא תגיות html או body חיצוניות וללא סימוני קוד של מפתחים."
-
-    for k in gemini_keys:
-        try:
-            local_client = genai.Client(api_key=k)
-            response = local_client.models.generate_content(
-                model=MODEL_NAME,
-                contents=f"{prompt}\n\n{text_log}"
-            )
-            return clean_html_markdown(response.text)
-        except:
-            continue
-            
-    if GROQ_API_KEY:
-        try:
-            gemma_url = "https://api.groq.com/openai/v1/chat/completions"
-            payload = {
-                "model": GROQ_CHAT_MODEL,
-                "messages": [
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": text_log}
-                ]
-            }
-            res = session.post(gemma_url, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=payload, timeout=15)
-            if res.status_code != 200:
-                log_event(call_id, "groq_summary_failed_body", status=res.status_code, body=res.text)
-            res.raise_for_status()
-            return clean_html_markdown(res.json()['choices'][0]['message']['content'])
-        except: pass
-        
-    return "<ul><li>לא ניתן היה להפיק תקציר אוטומטי עבור שיחה זו</li></ul>"
-
-def send_summary_email(call_id, caller_id, history_copy, name):
-    if not GOOGLE_SCRIPT_URL or not TARGET_EMAIL: return
-    try:
-        raw_summary_html = generate_smart_summary(call_id, history_copy)
-        
-        transcript_elements = []
-        for msg in history_copy:
-            if 'tool_calls' in msg or msg.get('role') == 'system':
-                continue
-            role = msg.get('role')
-            content = msg.get('content', '')
-            
-            if role == 'user':
-                label = "👤 משתמש"
-                css_class = "msg-user"
-                if content == "[קובץ שמע]":
-                    content = "<i>🎙️ הודעה קולית (התקבלה במערכת)</i>"
-            else:
-                label = "🤖 נועם (עוזר קולי)"
-                css_class = "msg-assistant"
-            
-            elem = f'''
-            <div class="msg-row">
-                <div class="msg {css_class}">
-                    <div class="role-label">{label}</div>
-                    <div>{content}</div>
-                </div>
-            </div>
-            '''
-            transcript_elements.append(elem)
-            
-        transcript_html = "\n".join(transcript_elements)
-        display_name = name or caller_id
-
-        full_email_body = f'''
-        <!DOCTYPE html>
-        <html lang="he" dir="rtl">
-        <head>
-            <meta charset="UTF-8">
-            <style>
-                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; color: #333; margin: 0; padding: 20px; direction: rtl; text-align: right; }}
-                .container {{ max-width: 650px; background: #ffffff; margin: 0 auto; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-top: 6px solid #4A90E2; }}
-                .header {{ text-align: center; border-bottom: 2px solid #eaedf2; padding-bottom: 20px; margin-bottom: 25px; }}
-                .header h1 {{ color: #2C3E50; margin: 0; font-size: 24px; }}
-                .meta-info {{ font-size: 13px; color: #7f8c8d; margin-top: 8px; }}
-                .section-title {{ font-size: 18px; color: #2980b9; margin-top: 30px; margin-bottom: 15px; border-right: 4px solid #2980b9; padding-right: 10px; font-weight: bold; }}
-                .summary-box {{ background-color: #f8f9fa; border-right: 4px solid #2ecc71; padding: 15px 20px; border-radius: 6px; line-height: 1.6; font-size: 15px; }}
-                .summary-box ul {{ margin: 0; padding-right: 20px; }}
-                .summary-box li {{ margin-bottom: 8px; }}
-                .transcript-container {{ margin-top: 20px; width: 100%; }}
-                .msg-row {{ width: 100%; clear: both; display: block; margin-bottom: 15px; }}
-                .msg {{ padding: 12px 15px; border-radius: 8px; line-height: 1.5; max-width: 75%; box-sizing: border-box; }}
-                .msg-user {{ background-color: #e8f4fd; border-right: 4px solid #3498db; float: right; text-align: right; }}
-                .msg-assistant {{ background-color: #f0f4f1; border-right: 4px solid #27ae60; float: left; text-align: right; }}
-                .role-label {{ font-weight: bold; font-size: 12px; margin-bottom: 5px; color: #555; }}
-                .footer {{ text-align: center; font-size: 12px; color: #bdc3c7; margin-top: 40px; border-top: 1px solid #eaedf2; padding-top: 15px; clear: both; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <h1>📋 סיכום שיחה טלפונית - נועם עוזר קולי</h1>
-                    <div class="meta-info">מתקשר: <strong>{display_name}</strong> | מזהה שיחה: {call_id}</div>
-                </div>
-                
-                <div class="section-title">📌 תקציר המנהלים (סיכום השיחה)</div>
-                <div class="summary-box">
-                    {raw_summary_html}
-                </div>
-                
-                <div class="section-title">💬 תמלול מהלך השיחה</div>
-                <div class="transcript-container">
-                    {transcript_html}
-                    <div style="clear: both;"></div>
-                </div>
-                
-                <div class="footer">
-                    נשלח אוטומטית על ידי מערכת ה-AI של נועם העוזר הקולי
-                </div>
-            </div>
-        </body>
-        </html>
-        '''
-
-        session.post(GOOGLE_SCRIPT_URL, json={"to": TARGET_EMAIL, "subject": f"סיכום שיחה מפורט - {display_name}", "htmlBody": full_email_body}, timeout=10)
-        log_event(call_id, "email_sent_successfully")
-    except Exception as e:
-        log_event(call_id, "email_sending_failed", error=str(e))
-
 def wikipedia_search(query: str) -> str:
     """Search Wikipedia to get accurate information about terms, people or events."""
     return query
 
+# ============================================================
+# נתיבי ניהול — Admin routes
+# ============================================================
+
+@app.route('/admin', methods=['GET'])
+def admin_page():
+    return send_file(ADMIN_HTML_FILE)
+
+@app.route('/admin/send-code', methods=['POST'])
+def admin_send_code():
+    data = request.get_json(force=True)
+    email = (data.get('email') or '').strip().lower()
+
+    if not email or '@' not in email:
+        return jsonify({"ok": False, "error": "כתובת מייל לא תקינה"})
+
+    if not TARGET_EMAIL or email != TARGET_EMAIL.strip().lower():
+        return jsonify({"ok": False, "error": "כתובת המייל אינה מורשית"})
+
+    if not GOOGLE_SCRIPT_URL:
+        return jsonify({"ok": False, "error": "משתנה GOOGLE_SCRIPT_URL לא מוגדר בשרת"})
+
+    code = ''.join(random.choices(string.digits, k=6))
+    auth_codes[email] = (code, time.time() + 300)  # תוקף 5 דקות
+
+    try:
+        body = f"""
+        <div dir="rtl" style="font-family:Arial,sans-serif;font-size:16px;color:#333">
+          <p>קוד האימות שלך למערכת נועם:</p>
+          <h2 style="letter-spacing:8px;color:#5b6ef5">{code}</h2>
+          <p style="color:#888;font-size:13px">הקוד תקף ל-5 דקות בלבד.</p>
+        </div>
+        """
+        session.post(GOOGLE_SCRIPT_URL, json={
+            "to": email,
+            "subject": "קוד אימות — נועם ניהול",
+            "htmlBody": body
+        }, timeout=10)
+    except Exception as e:
+        log_event("admin", "send_code_email_failed", error=str(e))
+        return jsonify({"ok": False, "error": "שגיאה בשליחת המייל"})
+
+    log_event("admin", "auth_code_sent", email=email)
+    return jsonify({"ok": True})
+
+@app.route('/admin/verify-code', methods=['POST'])
+def admin_verify_code():
+    data = request.get_json(force=True)
+    email = (data.get('email') or '').strip().lower()
+    code  = (data.get('code')  or '').strip()
+
+    entry = auth_codes.get(email)
+    if not entry:
+        return jsonify({"ok": False, "error": "לא נשלח קוד לכתובת זו"})
+
+    saved_code, expires_at = entry
+    if time.time() > expires_at:
+        del auth_codes[email]
+        return jsonify({"ok": False, "error": "הקוד פג תוקף — שלח קוד חדש"})
+
+    if code != saved_code:
+        return jsonify({"ok": False, "error": "קוד שגוי"})
+
+    del auth_codes[email]
+    token = ''.join(random.choices(string.ascii_letters + string.digits, k=48))
+    active_sessions[token] = email
+    log_event("admin", "login_success", email=email)
+    return jsonify({"ok": True, "token": token})
+
+def require_session():
+    token = request.headers.get('X-Token', '')
+    return active_sessions.get(token)
+
+@app.route('/admin/numbers', methods=['GET'])
+def admin_get_numbers():
+    if not require_session():
+        return jsonify({"ok": False, "error": "לא מורשה"}), 401
+    return jsonify({"ok": True, "numbers": load_allowed_numbers()})
+
+@app.route('/admin/numbers', methods=['POST'])
+def admin_save_numbers():
+    if not require_session():
+        return jsonify({"ok": False, "error": "לא מורשה"}), 401
+    data = request.get_json(force=True)
+    numbers = [n.strip() for n in (data.get('numbers') or []) if n.strip()]
+    save_allowed_numbers(numbers)
+    log_event("admin", "numbers_saved", count=len(numbers))
+    return jsonify({"ok": True})
+
+# ============================================================
+# נתיב ראשי — שיחות טלפון
+# ============================================================
+
 @app.route('/ai-chat', methods=['GET', 'POST'])
 def ai_chat():
     caller_id = request.values.get('ApiPhone', 'unknown')
-    call_id = request.values.get('ApiCallId', 'unknown_call')
-    
+    call_id   = request.values.get('ApiCallId', 'unknown_call')
+
     log_event(call_id, "incoming_call_request", params=dict(request.values))
+
+    if not is_allowed(caller_id):
+        log_event(call_id, "unauthorized_caller", caller_id=caller_id)
+        return Response("read=t-מצטערים השירות אינו זמין עבורך=hangup", mimetype='text/plain')
+
     history, known_name = get_chat_data(caller_id)
 
     if request.values.get('hangup') == 'yes':
         log_event(call_id, "hangup_received")
-        if history: 
-            email_executor.submit(send_summary_email, call_id, caller_id, history.copy(), known_name)
         delete_chat_data(caller_id)
         return Response("noop", mimetype='text/plain')
 
@@ -286,15 +273,16 @@ def ai_chat():
 
     try:
         log_event(call_id, "downloading_audio_file", path=audio_path[-1])
-        audio_res = session.get("https://www.call2all.co.il/ym/api/DownloadFile", params={"token": YEMOT_TOKEN, "path": f"ivr2:{audio_path[-1]}"}, timeout=20)
+        audio_res = session.get("https://www.call2all.co.il/ym/api/DownloadFile",
+                                params={"token": YEMOT_TOKEN, "path": f"ivr2:{audio_path[-1]}"},
+                                timeout=20)
         audio_res.raise_for_status()
-        
-        # מנגנון הגנה: וידוא שהקובץ הוא אכן שמע ולא שגיאת טקסט או קובץ שבור/ריק
+
         content_type = audio_res.headers.get('Content-Type', '').lower()
         if 'text' in content_type or 'html' in content_type or len(audio_res.content) < 1000:
             log_event(call_id, "invalid_audio_file_detected", content_type=content_type, size=len(audio_res.content))
             raise Exception("Downloaded file from Yemot is corrupted, an error page, or too small")
-            
+
         system_prompt = (
             "You are Noam, a helpful and friendly voice assistant on a phone call. "
             "CRITICAL RULE: Keep your answers VERY SHORT, concise, and conversational. "
@@ -305,8 +293,9 @@ def ai_chat():
             "FORMAT RULE: Do NOT use any punctuation marks whatsoever (no periods, no commas, no question marks). "
             "Use only clear Hebrew letters and spaces. Never output English or internal thoughts."
         )
-        
-        contents = [types.Content(role='user' if h['role'] == 'user' else 'model', parts=[types.Part(text=h['content'])]) for h in history]
+
+        contents = [types.Content(role='user' if h['role'] == 'user' else 'model',
+                                  parts=[types.Part(text=h['content'])]) for h in history]
         contents.append(types.Content(role="user", parts=[
             types.Part.from_bytes(data=audio_res.content, mime_type="audio/wav"),
             types.Part(text="הקשב לקובץ השמע המצורף וענה למשתמש בעברית תשובה קצרה מאוד של עד שלושה משפטים וללא סימני פיסוק כלל.")
@@ -316,7 +305,6 @@ def ai_chat():
         response_text = None
         user_content_for_history = "[קובץ שמע]"
 
-        # שלב 1: ניסיון מול מפתחות Gemini ברוטציה
         for idx, current_key in enumerate(gemini_keys):
             try:
                 log_event(call_id, f"trying_gemini_api_key_{idx+1}")
@@ -326,25 +314,22 @@ def ai_chat():
                     contents=contents,
                     config=types.GenerateContentConfig(system_instruction=system_prompt, tools=[wikipedia_search])
                 )
-                
+
                 if response.function_calls:
                     call = response.function_calls[0]
                     log_event(call_id, f"tool_use_triggered_key_{idx+1}", function_name=call.name, args=call.args)
                     res = perform_wikipedia_search(call_id, call.args.get("query", ""))
-                    
                     contents.append(response.candidates[0].content)
                     contents.append(types.Content(role="user", parts=[
                         types.Part.from_function_response(name="wikipedia_search", response={"result": res})
                     ]))
-                    
                     log_event(call_id, f"sending_tool_response_back_key_{idx+1}")
                     response = local_client.models.generate_content(
-                        model=MODEL_NAME, 
+                        model=MODEL_NAME,
                         contents=contents,
                         config=types.GenerateContentConfig(system_instruction=system_prompt)
                     )
 
-                # הגנה מפני הזיית הודעת הסירוב הפנימית של ג'מיני לשמע
                 temp_text = response.text or ""
                 if "מצטער" in temp_text and "להקשיב" in temp_text:
                     raise Exception("Gemini hallucinated a file-reading refusal text")
@@ -356,44 +341,32 @@ def ai_chat():
                 log_event(call_id, f"gemini_key_{idx+1}_failed", error=str(gemini_err))
                 continue
 
-        # שלב 2: גיבוי מלא ל-Groq (Whisper + Llama) במקרה של כישלון של ג'מיני
         if not response_text:
             if GROQ_API_KEY:
                 try:
                     log_event(call_id, "groq_fallback_triggered")
-                    
-                    log_event(call_id, "groq_whisper_transcription_started")
                     whisper_url = "https://api.groq.com/openai/v1/audio/transcriptions"
                     headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
                     files = {"file": ("audio.wav", audio_res.content, "audio/wav")}
-                    # ✅ תיקון: הוספת language="he" לשיפור תמלול עברית
                     data = {"model": GROQ_WHISPER_MODEL, "language": "he"}
-                    
                     whisper_res = session.post(whisper_url, headers=headers, files=files, data=data, timeout=15)
                     whisper_res.raise_for_status()
                     user_transcription = whisper_res.json().get("text", "")
                     log_event(call_id, "groq_whisper_success", text=user_transcription)
-                    
                     user_content_for_history = f"🎙️ {user_transcription}"
-                    
-                    log_event(call_id, "groq_chat_generation_started")
+
                     chat_url = "https://api.groq.com/openai/v1/chat/completions"
-                    
                     messages = [{"role": "system", "content": system_prompt}]
                     for h in history:
                         messages.append({"role": h['role'], "content": h['content']})
                     messages.append({"role": "user", "content": user_transcription})
-                    
-                    payload = {
-                        "model": GROQ_CHAT_MODEL,
-                        "messages": messages
-                    }
-                    
-                    chat_res = session.post(chat_url, headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=15)
+                    payload = {"model": GROQ_CHAT_MODEL, "messages": messages}
+                    chat_res = session.post(chat_url,
+                                            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                                            json=payload, timeout=15)
                     if chat_res.status_code != 200:
                         log_event(call_id, "groq_chat_failed_body", status=chat_res.status_code, body=chat_res.text)
                     chat_res.raise_for_status()
-                    
                     response_text = chat_res.json()['choices'][0]['message']['content']
                     log_event(call_id, "groq_chat_success")
                 except Exception as groq_err:
@@ -404,18 +377,16 @@ def ai_chat():
 
         ai_reply = clean_text(response_text)
         log_event(call_id, "final_response_success", reply=ai_reply)
-        
-        history.extend([{"role": "user", "content": user_content_for_history}, {"role": "assistant", "content": ai_reply}])
+        history.extend([{"role": "user", "content": user_content_for_history},
+                         {"role": "assistant", "content": ai_reply}])
         save_chat_data(caller_id, history, known_name)
-        
         return Response(f"read=t-{ai_reply}={RECORD_COMMAND}", mimetype='text/plain')
-        
+
     except Exception as e:
         error_trace = traceback.format_exc()
         print(f"--- CRITICAL ERROR FOR CALL {call_id} ---", file=sys.stderr)
         print(error_trace, file=sys.stderr, flush=True)
         log_event(call_id, "global_exception_caught", error=str(e))
-        
         err_msg_lower = str(e).lower()
         if "exhausted" in err_msg_lower or "429" in err_msg_lower or "limit" in err_msg_lower:
             friendly_message = "חלקה שגיאה זמנית במערכת עקב עומס בקשות רב מדי אנא נסו להתקשר שוב בעוד מספר דקות"
@@ -425,7 +396,6 @@ def ai_chat():
             friendly_message = "החיבור לשרתי השירות נתקע עקב בעיית תקשורת זמנית אנא נסו שוב"
         else:
             friendly_message = "חלקה שגיאה טכנית זמנית בעיבוד הנתונים של השיחה אנא נסו שוב מאוחר יותר"
-            
         friendly_message = clean_text(friendly_message)
         return Response(f"read=t-{friendly_message}", mimetype='text/plain')
 
