@@ -3,3 +3,4 @@ requests
 urllib3
 google-genai
 gunicorn
+psycopg2-binary
