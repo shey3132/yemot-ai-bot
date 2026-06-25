@@ -3,379 +3,206 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>נועם — ניהול מספרים מורשים</title>
+<title>נועם — ניהול</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600&display=swap');
-
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-  :root {
-    --bg: #0f1117;
-    --surface: #1a1d27;
-    --surface2: #22263a;
-    --border: rgba(255,255,255,0.08);
-    --border2: rgba(255,255,255,0.15);
-    --accent: #5b6ef5;
-    --accent-dim: rgba(91,110,245,0.15);
-    --accent-hover: #6e80f7;
-    --text: #e8eaf6;
-    --muted: #7b82a8;
-    --danger: #f56565;
-    --danger-dim: rgba(245,101,101,0.12);
-    --success: #48bb78;
-    --success-dim: rgba(72,187,120,0.12);
-    --radius: 10px;
-    --radius-lg: 16px;
-  }
-
-  html, body {
-    min-height: 100vh;
-    background: var(--bg);
-    color: var(--text);
-    font-family: 'Heebo', sans-serif;
-    font-size: 15px;
-    line-height: 1.6;
-  }
-
-  /* ——— layout ——— */
-  .shell {
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-start;
-    padding: 40px 16px 60px;
-  }
-
-  .logo-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 36px;
-    color: var(--muted);
-    font-size: 13px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-  .logo-dot {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    background: var(--accent);
-    box-shadow: 0 0 8px var(--accent);
-  }
-
-  .card {
-    width: 100%;
-    max-width: 520px;
-    background: var(--surface);
-    border: 0.5px solid var(--border);
-    border-radius: var(--radius-lg);
-    padding: 32px;
-  }
-
-  /* ——— auth screen ——— */
-  .auth-title {
-    font-size: 22px;
-    font-weight: 600;
-    margin-bottom: 6px;
-  }
-  .auth-sub {
-    font-size: 13px;
-    color: var(--muted);
-    margin-bottom: 28px;
-  }
-
-  label {
-    display: block;
-    font-size: 12px;
-    color: var(--muted);
-    margin-bottom: 6px;
-    letter-spacing: 0.04em;
-  }
-
-  input[type="email"],
-  input[type="text"],
-  input[type="number"],
-  input[type="tel"] {
-    width: 100%;
-    height: 44px;
-    background: var(--surface2);
-    border: 0.5px solid var(--border2);
-    border-radius: var(--radius);
-    color: var(--text);
-    font-family: 'Heebo', sans-serif;
-    font-size: 15px;
-    padding: 0 14px;
-    outline: none;
-    transition: border-color 0.15s;
-    direction: ltr;
-    text-align: left;
-  }
-  input:focus { border-color: var(--accent); }
-
-  .btn {
-    width: 100%;
-    height: 44px;
-    border: none;
-    border-radius: var(--radius);
-    font-family: 'Heebo', sans-serif;
-    font-size: 15px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: opacity 0.15s, transform 0.1s;
-    margin-top: 14px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-  }
-  .btn:active { transform: scale(0.98); }
-  .btn-primary { background: var(--accent); color: #fff; }
-  .btn-primary:hover { opacity: 0.88; }
-  .btn-ghost {
-    background: var(--surface2);
-    color: var(--muted);
-    border: 0.5px solid var(--border2);
-    margin-top: 10px;
-    font-size: 13px;
-  }
-  .btn-ghost:hover { color: var(--text); border-color: var(--border2); background: #2a2f47; }
-
-  .msg {
-    font-size: 13px;
-    border-radius: var(--radius);
-    padding: 10px 14px;
-    margin-top: 14px;
-    display: none;
-  }
-  .msg.err { background: var(--danger-dim); color: var(--danger); }
-  .msg.ok  { background: var(--success-dim); color: var(--success); }
-  .msg.show { display: block; }
-
-  /* ——— admin panel ——— */
-  #panel { display: none; width: 100%; max-width: 560px; }
-
-  .panel-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 24px;
-  }
-  .panel-title { font-size: 20px; font-weight: 600; }
-  .logout-btn {
-    font-size: 12px;
-    color: var(--muted);
-    background: none;
-    border: 0.5px solid var(--border2);
-    border-radius: 6px;
-    padding: 4px 12px;
-    cursor: pointer;
-    font-family: 'Heebo', sans-serif;
-  }
-  .logout-btn:hover { color: var(--text); }
-
-  .add-row {
-    display: flex;
-    gap: 10px;
-    margin-bottom: 20px;
-  }
-  .add-row input { margin: 0; flex: 1; }
-  .add-btn {
-    height: 44px;
-    padding: 0 20px;
-    background: var(--accent);
-    color: #fff;
-    border: none;
-    border-radius: var(--radius);
-    font-family: 'Heebo', sans-serif;
-    font-size: 14px;
-    font-weight: 500;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: opacity 0.15s;
-    flex-shrink: 0;
-  }
-  .add-btn:hover { opacity: 0.85; }
-
-  .list-box {
-    background: var(--surface);
-    border: 0.5px solid var(--border);
-    border-radius: var(--radius-lg);
-    overflow: hidden;
-    margin-bottom: 20px;
-  }
-  .list-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 18px;
-    background: var(--surface2);
-    border-bottom: 0.5px solid var(--border);
-    font-size: 12px;
-    color: var(--muted);
-    letter-spacing: 0.04em;
-  }
-  .list-empty {
-    padding: 36px;
-    text-align: center;
-    color: var(--muted);
-    font-size: 14px;
-  }
-  .num-row {
-    display: flex;
-    align-items: center;
-    padding: 12px 18px;
-    border-bottom: 0.5px solid var(--border);
-    gap: 12px;
-    transition: background 0.1s;
-  }
-  .num-row:last-child { border-bottom: none; }
-  .num-row:hover { background: var(--surface2); }
-  .num-val {
-    flex: 1;
-    font-size: 15px;
-    font-weight: 400;
-    direction: ltr;
-    text-align: left;
-    letter-spacing: 0.03em;
-  }
-  .del-btn {
-    width: 30px; height: 30px;
-    border: none;
-    background: none;
-    color: var(--muted);
-    cursor: pointer;
-    border-radius: 6px;
-    font-size: 18px;
-    display: flex; align-items: center; justify-content: center;
-    transition: background 0.12s, color 0.12s;
-  }
-  .del-btn:hover { background: var(--danger-dim); color: var(--danger); }
-
-  .bottom-row {
-    display: flex;
-    gap: 10px;
-    justify-content: flex-end;
-  }
-  .sm-btn {
-    height: 38px;
-    padding: 0 16px;
-    border-radius: var(--radius);
-    font-family: 'Heebo', sans-serif;
-    font-size: 13px;
-    cursor: pointer;
-    border: 0.5px solid var(--border2);
-    background: var(--surface2);
-    color: var(--muted);
-    transition: color 0.12s, background 0.12s;
-  }
-  .sm-btn:hover { color: var(--text); background: #2a2f47; }
-  .sm-btn.primary { background: var(--accent); color: #fff; border-color: transparent; }
-  .sm-btn.primary:hover { opacity: 0.85; }
-
-  .toast {
-    position: fixed;
-    bottom: 24px;
-    left: 50%;
-    transform: translateX(-50%) translateY(10px);
-    background: var(--surface2);
-    border: 0.5px solid var(--border2);
-    border-radius: var(--radius);
-    padding: 10px 20px;
-    font-size: 13px;
-    color: var(--text);
-    opacity: 0;
-    transition: opacity 0.2s, transform 0.2s;
-    pointer-events: none;
-    z-index: 99;
-  }
-  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-
-  .spinner {
-    width: 18px; height: 18px;
-    border: 2px solid rgba(255,255,255,0.2);
-    border-top-color: #fff;
-    border-radius: 50%;
-    animation: spin 0.7s linear infinite;
-    display: none;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  .step-indicator {
-    display: flex;
-    gap: 6px;
-    margin-bottom: 24px;
-  }
-  .step { height: 3px; border-radius: 2px; flex: 1; background: var(--border2); transition: background 0.3s; }
-  .step.active { background: var(--accent); }
+@import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0f1117;--surface:#1a1d27;--surface2:#22263a;--surface3:#2a2f47;
+  --border:rgba(255,255,255,0.07);--border2:rgba(255,255,255,0.13);
+  --accent:#5b6ef5;--accent-dim:rgba(91,110,245,0.15);
+  --text:#e8eaf6;--muted:#7b82a8;--faint:#4a5175;
+  --green:#48bb78;--green-dim:rgba(72,187,120,0.12);
+  --yellow:#f6ad55;--yellow-dim:rgba(246,173,85,0.12);
+  --red:#f56565;--red-dim:rgba(245,101,101,0.12);
+  --radius:10px;--radius-lg:16px;
+}
+html,body{min-height:100vh;background:var(--bg);color:var(--text);font-family:'Heebo',sans-serif;font-size:15px}
+/* ── layout ── */
+.shell{display:flex;min-height:100vh}
+.sidebar{width:220px;background:var(--surface);border-left:0.5px solid var(--border);display:flex;flex-direction:column;padding:24px 0;flex-shrink:0}
+.logo{padding:0 20px 24px;border-bottom:0.5px solid var(--border);margin-bottom:16px}
+.logo-title{font-size:18px;font-weight:700;color:var(--text)}
+.logo-sub{font-size:11px;color:var(--muted);margin-top:2px}
+.nav-item{display:flex;align-items:center;gap:10px;padding:10px 20px;cursor:pointer;color:var(--muted);font-size:14px;border-right:3px solid transparent;transition:all .15s}
+.nav-item:hover{color:var(--text);background:var(--surface2)}
+.nav-item.active{color:var(--accent);border-right-color:var(--accent);background:var(--accent-dim)}
+.nav-icon{font-size:18px;width:22px;text-align:center}
+.main{flex:1;overflow:auto;padding:32px}
+.page{display:none}.page.active{display:block}
+.page-title{font-size:22px;font-weight:600;margin-bottom:6px}
+.page-sub{font-size:13px;color:var(--muted);margin-bottom:28px}
+/* ── auth ── */
+.auth-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);padding:20px}
+.auth-card{width:100%;max-width:420px;background:var(--surface);border:0.5px solid var(--border2);border-radius:var(--radius-lg);overflow:hidden}
+.auth-top{background:var(--accent);padding:28px;text-align:center}
+.auth-top h1{color:#fff;font-size:20px;font-weight:600;margin-top:8px}
+.auth-body{padding:32px}
+.steps{display:flex;gap:6px;margin-bottom:24px}
+.step{height:3px;border-radius:2px;flex:1;background:var(--border2);transition:background .3s}
+.step.on{background:var(--accent)}
+label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px;letter-spacing:.04em}
+input{width:100%;height:44px;background:var(--surface2);border:0.5px solid var(--border2);border-radius:var(--radius);color:var(--text);font-family:'Heebo',sans-serif;font-size:15px;padding:0 14px;outline:none;transition:border-color .15s;direction:ltr;text-align:left}
+input:focus{border-color:var(--accent)}
+.btn{width:100%;height:44px;border:none;border-radius:var(--radius);font-family:'Heebo',sans-serif;font-size:15px;font-weight:500;cursor:pointer;margin-top:14px;display:flex;align-items:center;justify-content:center;gap:8px;transition:opacity .15s,transform .1s}
+.btn:active{transform:scale(.98)}
+.btn-p{background:var(--accent);color:#fff}.btn-p:hover{opacity:.88}
+.btn-g{background:var(--surface2);color:var(--muted);border:0.5px solid var(--border2);font-size:13px;margin-top:10px}
+.btn-g:hover{color:var(--text)}
+.msg{font-size:13px;border-radius:var(--radius);padding:10px 14px;margin-top:12px;display:none}
+.msg.err{background:var(--red-dim);color:var(--red);display:block}
+.msg.ok{background:var(--green-dim);color:var(--green);display:block}
+/* ── stat cards ── */
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:14px;margin-bottom:28px}
+.stat-card{background:var(--surface);border:0.5px solid var(--border);border-radius:var(--radius-lg);padding:20px}
+.stat-val{font-size:32px;font-weight:700;color:var(--text)}
+.stat-label{font-size:12px;color:var(--muted);margin-top:4px}
+/* ── chart ── */
+.chart-wrap{background:var(--surface);border:0.5px solid var(--border);border-radius:var(--radius-lg);padding:20px;margin-bottom:28px}
+.chart-title{font-size:14px;font-weight:500;margin-bottom:16px;color:var(--muted)}
+.bars{display:flex;align-items:flex-end;gap:8px;height:100px}
+.bar-col{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px}
+.bar{width:100%;background:var(--accent);border-radius:4px 4px 0 0;min-height:4px;transition:height .4s}
+.bar-day{font-size:10px;color:var(--faint)}
+.bar-cnt{font-size:11px;color:var(--muted)}
+/* ── key status ── */
+.keys-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:28px}
+.key-card{background:var(--surface);border:0.5px solid var(--border);border-radius:var(--radius-lg);padding:16px;display:flex;align-items:center;gap:12px}
+.dot{width:12px;height:12px;border-radius:50%;flex-shrink:0}
+.dot.green{background:var(--green);box-shadow:0 0 8px var(--green)}
+.dot.yellow{background:var(--yellow);box-shadow:0 0 8px var(--yellow)}
+.dot.red{background:var(--red);box-shadow:0 0 8px var(--red)}
+.dot.gray{background:var(--muted)}
+.key-info{flex:1}
+.key-name{font-size:13px;font-weight:500}
+.key-detail{font-size:11px;color:var(--muted);margin-top:2px}
+/* ── numbers ── */
+.add-row{display:flex;gap:10px;margin-bottom:8px}
+.add-row input{margin:0;flex:1}
+.add-row input.label-inp{max-width:160px}
+.add-btn{height:44px;padding:0 20px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius);font-family:'Heebo',sans-serif;font-size:14px;font-weight:500;cursor:pointer;white-space:nowrap;transition:opacity .15s;flex-shrink:0}
+.add-btn:hover{opacity:.85}
+.list-box{background:var(--surface);border:0.5px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:20px}
+.list-head{display:flex;justify-content:space-between;padding:12px 18px;background:var(--surface2);border-bottom:0.5px solid var(--border);font-size:12px;color:var(--muted)}
+.list-empty{padding:36px;text-align:center;color:var(--muted);font-size:14px}
+.num-row{display:flex;align-items:center;padding:12px 18px;border-bottom:0.5px solid var(--border);gap:12px;transition:background .1s}
+.num-row:last-child{border-bottom:none}
+.num-row:hover{background:var(--surface2)}
+.num-phone{flex:1;font-size:15px;direction:ltr;text-align:left}
+.num-label{font-size:12px;color:var(--muted);min-width:80px;text-align:right}
+.del-btn{width:30px;height:30px;border:none;background:none;color:var(--muted);cursor:pointer;border-radius:6px;font-size:18px;display:flex;align-items:center;justify-content:center;transition:background .12s,color .12s}
+.del-btn:hover{background:var(--red-dim);color:var(--red)}
+.bottom-row{display:flex;gap:10px;justify-content:flex-end}
+.sm-btn{height:38px;padding:0 16px;border-radius:var(--radius);font-family:'Heebo',sans-serif;font-size:13px;cursor:pointer;border:0.5px solid var(--border2);background:var(--surface2);color:var(--muted);transition:color .12s,background .12s}
+.sm-btn:hover{color:var(--text);background:var(--surface3)}
+.sm-btn.p{background:var(--accent);color:#fff;border-color:transparent}.sm-btn.p:hover{opacity:.85}
+/* ── toast ── */
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(10px);background:var(--surface2);border:0.5px solid var(--border2);border-radius:var(--radius);padding:10px 20px;font-size:13px;color:var(--text);opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;z-index:99}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+/* ── spinner ── */
+.spinner{width:18px;height:18px;border:2px solid rgba(255,255,255,.2);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+/* ── logout ── */
+.logout-btn{margin-top:auto;padding:10px 20px;font-size:13px;color:var(--muted);background:none;border:none;cursor:pointer;font-family:'Heebo',sans-serif;text-align:right}
+.logout-btn:hover{color:var(--red)}
 </style>
 </head>
 <body>
-<div class="shell">
-  <div class="logo-row">
-    <div class="logo-dot"></div>
-    נועם עוזר קולי
-  </div>
 
-  <!-- AUTH CARD -->
-  <div class="card" id="auth-card">
-    <div class="step-indicator">
-      <div class="step active" id="s1"></div>
-      <div class="step" id="s2"></div>
+<!-- AUTH -->
+<div class="auth-wrap" id="auth-wrap">
+  <div class="auth-card">
+    <div class="auth-top">
+      <div style="font-size:32px">🔐</div>
+      <h1>נועם — כניסה לניהול</h1>
     </div>
+    <div class="auth-body">
+      <div class="steps"><div class="step on" id="s1"></div><div class="step" id="s2"></div></div>
 
-    <!-- שלב 1: הכנסת מייל -->
-    <div id="step1">
-      <div class="auth-title">כניסה לניהול</div>
-      <div class="auth-sub">הכנס את כתובת המייל שלך לקבלת קוד אימות</div>
-      <label>כתובת מייל</label>
-      <input type="email" id="email-inp" placeholder="your@email.com" />
-      <div class="msg" id="msg1"></div>
-      <button class="btn btn-primary" onclick="sendCode()">
-        <span id="send-txt">שלח קוד אימות</span>
-        <div class="spinner" id="send-spin"></div>
-      </button>
-    </div>
-
-    <!-- שלב 2: הכנסת קוד -->
-    <div id="step2" style="display:none">
-      <div class="auth-title">הכנס קוד</div>
-      <div class="auth-sub" id="code-sub">נשלח קוד בן 6 ספרות לכתובת המייל שלך</div>
-      <label>קוד אימות</label>
-      <input type="text" id="code-inp" placeholder="123456" maxlength="6" inputmode="numeric" />
-      <div class="msg" id="msg2"></div>
-      <button class="btn btn-primary" onclick="verifyCode()">
-        <span id="verify-txt">אמת וכנס</span>
-        <div class="spinner" id="verify-spin"></div>
-      </button>
-      <button class="btn btn-ghost" onclick="backToEmail()">← שנה כתובת מייל</button>
-    </div>
-  </div>
-
-  <!-- ADMIN PANEL -->
-  <div id="panel">
-    <div class="panel-header">
-      <div class="panel-title">מספרים מורשים</div>
-      <button class="logout-btn" onclick="logout()">יציאה</button>
-    </div>
-
-    <div class="add-row">
-      <input type="tel" id="num-inp" placeholder="0501234567" maxlength="15" onkeydown="if(event.key==='Enter') addNumber()" />
-      <button class="add-btn" onclick="addNumber()">+ הוסף</button>
-    </div>
-    <div class="msg" id="add-msg" style="margin-top:0; margin-bottom:14px;"></div>
-
-    <div class="list-box">
-      <div class="list-head">
-        <span>רשימת גישה</span>
-        <span id="num-count">0 מספרים</span>
+      <!-- שלב 1 -->
+      <div id="step1">
+        <label>כתובת מייל</label>
+        <input type="email" id="email-inp" placeholder="your@email.com" onkeydown="if(event.key==='Enter')sendCode()"/>
+        <div class="msg" id="msg1"></div>
+        <button class="btn btn-p" onclick="sendCode()">
+          <span id="send-txt">שלח קוד אימות</span>
+          <div class="spinner" id="send-spin"></div>
+        </button>
       </div>
-      <div id="num-list"><div class="list-empty">אין מספרים ברשימה עדיין</div></div>
+
+      <!-- שלב 2 -->
+      <div id="step2" style="display:none">
+        <label>קוד אימות (6 ספרות)</label>
+        <input type="text" id="code-inp" placeholder="••••••" maxlength="6" inputmode="numeric"
+               oninput="autoVerify(this.value)" style="font-size:28px;letter-spacing:10px;text-align:center"/>
+        <div class="msg" id="msg2"></div>
+        <button class="btn btn-p" id="verify-btn" onclick="verifyCode()" style="display:none">
+          <span id="verify-txt">אמת וכנס</span>
+          <div class="spinner" id="verify-spin"></div>
+        </button>
+        <button class="btn btn-g" onclick="backToEmail()">← שנה מייל</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ADMIN SHELL -->
+<div class="shell" id="admin-shell" style="display:none">
+  <div class="sidebar">
+    <div class="logo">
+      <div class="logo-title">🤖 נועם</div>
+      <div class="logo-sub">לוח בקרה</div>
+    </div>
+    <div class="nav-item active" onclick="showPage('stats',this)"><span class="nav-icon">📊</span> סטטיסטיקות</div>
+    <div class="nav-item" onclick="showPage('numbers',this)"><span class="nav-icon">📱</span> מספרים מורשים</div>
+    <button class="logout-btn" onclick="logout()">התנתק</button>
+  </div>
+
+  <div class="main">
+    <!-- סטטיסטיקות -->
+    <div class="page active" id="page-stats">
+      <div class="page-title">סטטיסטיקות</div>
+      <div class="page-sub">סקירת פעילות המערכת בזמן אמת</div>
+
+      <div class="stat-grid">
+        <div class="stat-card"><div class="stat-val" id="stat-today">—</div><div class="stat-label">שיחות היום</div></div>
+        <div class="stat-card"><div class="stat-val" id="stat-week">—</div><div class="stat-label">שיחות השבוע</div></div>
+        <div class="stat-card"><div class="stat-val" id="stat-total">—</div><div class="stat-label">סה״כ שיחות</div></div>
+      </div>
+
+      <div class="chart-wrap">
+        <div class="chart-title">שיחות — 7 ימים אחרונים</div>
+        <div class="bars" id="chart-bars"><div style="color:var(--muted);font-size:13px">טוען...</div></div>
+      </div>
+
+      <div style="font-size:14px;font-weight:500;color:var(--muted);margin-bottom:12px;">סטטוס מפתחות API — שעה אחרונה</div>
+      <div class="keys-grid" id="keys-grid"><div style="color:var(--muted);font-size:13px">טוען...</div></div>
     </div>
 
-    <div class="bottom-row">
-      <button class="sm-btn" onclick="clearAll()">מחק הכל</button>
-      <button class="sm-btn primary" onclick="saveToServer()">💾 שמור שינויים</button>
+    <!-- מספרים -->
+    <div class="page" id="page-numbers">
+      <div class="page-title">מספרים מורשים</div>
+      <div class="page-sub">רק מספרים ברשימה זו יוכלו להשתמש במערכת</div>
+
+      <div class="add-row">
+        <input type="tel" id="num-inp" placeholder="0501234567" maxlength="15" onkeydown="if(event.key==='Enter')addNumber()"/>
+        <input type="text" id="label-inp" class="label-inp" placeholder="שם (אופציונלי)" onkeydown="if(event.key==='Enter')addNumber()"/>
+        <button class="add-btn" onclick="addNumber()">+ הוסף</button>
+      </div>
+      <div class="msg" id="add-msg" style="margin-bottom:14px"></div>
+
+      <div class="list-box">
+        <div class="list-head">
+          <span>רשימת גישה</span>
+          <span id="num-count">0 מספרים</span>
+        </div>
+        <div id="num-list"><div class="list-empty">אין מספרים ברשימה</div></div>
+      </div>
+
+      <div class="bottom-row">
+        <button class="sm-btn" onclick="clearAll()">מחק הכל</button>
+        <button class="sm-btn p" onclick="saveNumbers()">💾 שמור שינויים</button>
+      </div>
     </div>
   </div>
 </div>
@@ -383,167 +210,180 @@
 <div class="toast" id="toast"></div>
 
 <script>
-let sessionToken = null;
+let token = null;
 let numbers = [];
 
-function showMsg(id, text, type) {
-  const el = document.getElementById(id);
-  el.textContent = text;
-  el.className = 'msg ' + type + ' show';
-}
-function hideMsg(id) {
-  const el = document.getElementById(id);
-  el.className = 'msg';
+/* ── utils ── */
+function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500)}
+function showMsg(id,txt,type){const e=document.getElementById(id);e.textContent=txt;e.className='msg '+(type||'err')}
+function hideMsg(id){document.getElementById(id).className='msg'}
+function setLoad(txtId,spinId,on){document.getElementById(txtId).style.display=on?'none':'inline';document.getElementById(spinId).style.display=on?'block':'none'}
+
+/* ── auth ── */
+async function sendCode(){
+  const email=document.getElementById('email-inp').value.trim();
+  if(!email||!email.includes('@')){showMsg('msg1','הכנס כתובת מייל תקינה');return}
+  hideMsg('msg1');setLoad('send-txt','send-spin',true);
+  const res=await fetch('/admin/send-code',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});
+  const d=await res.json();
+  setLoad('send-txt','send-spin',false);
+  if(d.ok){
+    document.getElementById('step1').style.display='none';
+    document.getElementById('step2').style.display='block';
+    document.getElementById('s2').classList.add('on');
+    document.getElementById('code-inp').focus();
+  } else showMsg('msg1',d.error||'שגיאה בשליחה');
 }
 
-function setLoading(btnTxt, spinId, loading) {
-  document.getElementById(btnTxt).style.display = loading ? 'none' : 'inline';
-  document.getElementById(spinId).style.display = loading ? 'block' : 'none';
+function autoVerify(val){
+  // ברגע שהוכנסו 6 ספרות — אימות אוטומטי
+  if(val.length===6) verifyCode();
 }
 
-function toast(msg) {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 2500);
+async function verifyCode(){
+  const email=document.getElementById('email-inp').value.trim();
+  const code=document.getElementById('code-inp').value.trim();
+  if(code.length!==6){showMsg('msg2','הקוד חייב להיות בן 6 ספרות');return}
+  hideMsg('msg2');setLoad('verify-txt','verify-spin',true);
+  const res=await fetch('/admin/verify-code',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,code})});
+  const d=await res.json();
+  setLoad('verify-txt','verify-spin',false);
+  if(d.ok){
+    token=d.token;
+    document.getElementById('auth-wrap').style.display='none';
+    document.getElementById('admin-shell').style.display='flex';
+    loadStats();loadNumbers();
+  } else {showMsg('msg2',d.error||'קוד שגוי');document.getElementById('code-inp').value=''}
 }
 
-async function sendCode() {
-  const email = document.getElementById('email-inp').value.trim();
-  if (!email || !email.includes('@')) { showMsg('msg1','הכנס כתובת מייל תקינה','err'); return; }
-  hideMsg('msg1');
-  setLoading('send-txt','send-spin',true);
-  try {
-    const res = await fetch('/admin/send-code', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({email})
-    });
-    const data = await res.json();
-    if (data.ok) {
-      document.getElementById('step1').style.display = 'none';
-      document.getElementById('step2').style.display = 'block';
-      document.getElementById('s2').classList.add('active');
-      document.getElementById('code-sub').textContent = 'נשלח קוד בן 6 ספרות אל ' + email;
-    } else {
-      showMsg('msg1', data.error || 'שגיאה בשליחת הקוד', 'err');
-    }
-  } catch(e) {
-    showMsg('msg1','שגיאת תקשורת עם השרת','err');
-  }
-  setLoading('send-txt','send-spin',false);
-}
-
-async function verifyCode() {
-  const email = document.getElementById('email-inp').value.trim();
-  const code = document.getElementById('code-inp').value.trim();
-  if (code.length !== 6) { showMsg('msg2','הקוד חייב להיות בן 6 ספרות','err'); return; }
-  hideMsg('msg2');
-  setLoading('verify-txt','verify-spin',true);
-  try {
-    const res = await fetch('/admin/verify-code', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({email, code})
-    });
-    const data = await res.json();
-    if (data.ok) {
-      sessionToken = data.token;
-      document.getElementById('auth-card').style.display = 'none';
-      document.getElementById('panel').style.display = 'block';
-      loadNumbers();
-    } else {
-      showMsg('msg2', data.error || 'קוד שגוי', 'err');
-    }
-  } catch(e) {
-    showMsg('msg2','שגיאת תקשורת עם השרת','err');
-  }
-  setLoading('verify-txt','verify-spin',false);
-}
-
-function backToEmail() {
-  document.getElementById('step1').style.display = 'block';
-  document.getElementById('step2').style.display = 'none';
-  document.getElementById('s2').classList.remove('active');
-  document.getElementById('code-inp').value = '';
+function backToEmail(){
+  document.getElementById('step1').style.display='block';
+  document.getElementById('step2').style.display='none';
+  document.getElementById('s2').classList.remove('on');
+  document.getElementById('code-inp').value='';
   hideMsg('msg2');
 }
 
-async function loadNumbers() {
-  const res = await fetch('/admin/numbers', {headers: {'X-Token': sessionToken}});
-  const data = await res.json();
-  numbers = data.numbers || [];
-  renderList();
+function logout(){
+  token=null;numbers=[];
+  document.getElementById('admin-shell').style.display='none';
+  document.getElementById('auth-wrap').style.display='flex';
+  document.getElementById('email-inp').value='';
+  document.getElementById('code-inp').value='';
+  document.getElementById('step1').style.display='block';
+  document.getElementById('step2').style.display='none';
+  document.getElementById('s2').classList.remove('on');
 }
 
-function renderList() {
-  const list = document.getElementById('num-list');
-  document.getElementById('num-count').textContent = numbers.length + ' מספרים';
-  if (!numbers.length) {
-    list.innerHTML = '<div class="list-empty">אין מספרים ברשימה עדיין</div>';
-    return;
-  }
-  list.innerHTML = numbers.map((n,i) => `
+/* ── nav ── */
+function showPage(name,el){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  document.getElementById('page-'+name).classList.add('active');
+  el.classList.add('active');
+  if(name==='stats') loadStats();
+}
+
+/* ── stats ── */
+async function loadStats(){
+  const res=await fetch('/admin/stats',{headers:{'X-Token':token}});
+  const d=await res.json();
+  if(!d.ok) return;
+  document.getElementById('stat-today').textContent=d.today;
+  document.getElementById('stat-week').textContent=d.week;
+  document.getElementById('stat-total').textContent=d.total;
+  renderChart(d.chart);
+  renderKeys(d.keys);
+}
+
+function renderChart(data){
+  const el=document.getElementById('chart-bars');
+  if(!data.length){el.innerHTML='<div style="color:var(--muted);font-size:13px">אין נתונים עדיין</div>';return}
+  const max=Math.max(...data.map(d=>d.count),1);
+  el.innerHTML=data.map(d=>{
+    const h=Math.round((d.count/max)*90)+10;
+    const day=new Date(d.day).toLocaleDateString('he-IL',{weekday:'short'});
+    return `<div class="bar-col">
+      <div class="bar-cnt">${d.count}</div>
+      <div class="bar" style="height:${h}px"></div>
+      <div class="bar-day">${day}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderKeys(keys){
+  const el=document.getElementById('keys-grid');
+  const allKeys=[
+    {api:'gemini',index:1,label:'Gemini מפתח 1'},
+    {api:'gemini',index:2,label:'Gemini מפתח 2'},
+    {api:'groq',index:1,label:'Groq (גיבוי)'},
+  ];
+  el.innerHTML=allKeys.map(k=>{
+    const found=keys.find(r=>r.api===k.api&&r.index===k.index);
+    let dotClass='gray',detail='לא נעשה שימוש בשעה האחרונה';
+    if(found){
+      const rate=found.total>0?found.ok/found.total:0;
+      dotClass=rate>0.8?'green':rate>0.4?'yellow':'red';
+      detail=`${found.ok}/${found.total} הצלחות`;
+    }
+    return `<div class="key-card">
+      <div class="dot ${dotClass}"></div>
+      <div class="key-info">
+        <div class="key-name">${k.label}</div>
+        <div class="key-detail">${detail}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/* ── numbers ── */
+async function loadNumbers(){
+  const res=await fetch('/admin/numbers',{headers:{'X-Token':token}});
+  const d=await res.json();
+  if(d.ok){numbers=d.numbers;renderList()}
+}
+
+function normalize(n){return n.replace(/[-\s]/g,'')}
+function isValid(n){return /^0[5][0-9]{8}$/.test(n)}
+
+function renderList(){
+  const el=document.getElementById('num-list');
+  document.getElementById('num-count').textContent=numbers.length+' מספרים';
+  if(!numbers.length){el.innerHTML='<div class="list-empty">אין מספרים ברשימה</div>';return}
+  el.innerHTML=numbers.map((n,i)=>`
     <div class="num-row">
-      <span class="num-val">${n}</span>
-      <button class="del-btn" onclick="removeNum(${i})" title="הסר">×</button>
+      <span class="num-phone">${n.phone}</span>
+      <span class="num-label">${n.label||''}</span>
+      <button class="del-btn" onclick="removeNum(${i})">×</button>
     </div>
   `).join('');
 }
 
-function normalize(n) { return n.replace(/[-\s]/g,''); }
-function isValid(n) { return /^0[5][0-9]{8}$/.test(n); }
-
-function addNumber() {
-  const inp = document.getElementById('num-inp');
-  const val = normalize(inp.value.trim());
+function addNumber(){
+  const phone=normalize(document.getElementById('num-inp').value.trim());
+  const label=document.getElementById('label-inp').value.trim();
   hideMsg('add-msg');
-  if (!isValid(val)) { showMsg('add-msg','מספר לא תקין — נדרש מספר סלולרי ישראלי בן 10 ספרות','err'); return; }
-  if (numbers.includes(val)) { showMsg('add-msg','המספר כבר קיים ברשימה','err'); return; }
-  numbers.push(val);
+  if(!isValid(phone)){showMsg('add-msg','מספר לא תקין — נדרש מספר סלולרי ישראלי בן 10 ספרות');return}
+  if(numbers.find(n=>n.phone===phone)){showMsg('add-msg','המספר כבר קיים');return}
+  numbers.push({phone,label});
   renderList();
-  inp.value = '';
-  toast('המספר נוסף — אל תשכח לשמור');
+  document.getElementById('num-inp').value='';
+  document.getElementById('label-inp').value='';
+  toast('נוסף — אל תשכח לשמור');
 }
 
-function removeNum(i) {
-  numbers.splice(i,1);
-  renderList();
-  toast('המספר הוסר — אל תשכח לשמור');
+function removeNum(i){numbers.splice(i,1);renderList();toast('הוסר — אל תשכח לשמור')}
+
+function clearAll(){
+  if(!numbers.length)return;
+  if(!confirm('למחוק את כל המספרים?'))return;
+  numbers=[];renderList();
 }
 
-function clearAll() {
-  if (!numbers.length) return;
-  if (!confirm('למחוק את כל המספרים?')) return;
-  numbers = [];
-  renderList();
-}
-
-async function saveToServer() {
-  try {
-    const res = await fetch('/admin/numbers', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json','X-Token': sessionToken},
-      body: JSON.stringify({numbers})
-    });
-    const data = await res.json();
-    if (data.ok) toast('✓ השינויים נשמרו בהצלחה');
-    else toast('שגיאה בשמירה: ' + (data.error || ''));
-  } catch(e) {
-    toast('שגיאת תקשורת עם השרת');
-  }
-}
-
-function logout() {
-  sessionToken = null;
-  numbers = [];
-  document.getElementById('panel').style.display = 'none';
-  document.getElementById('auth-card').style.display = 'block';
-  document.getElementById('step1').style.display = 'block';
-  document.getElementById('step2').style.display = 'none';
-  document.getElementById('s2').classList.remove('active');
-  document.getElementById('email-inp').value = '';
-  document.getElementById('code-inp').value = '';
+async function saveNumbers(){
+  const res=await fetch('/admin/numbers',{method:'POST',headers:{'Content-Type':'application/json','X-Token':token},body:JSON.stringify({numbers})});
+  const d=await res.json();
+  toast(d.ok?'✓ נשמר בהצלחה':'שגיאה: '+(d.error||''));
 }
 </script>
 </body>
