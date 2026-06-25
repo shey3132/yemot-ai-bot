@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>נועם — ניהול מספרים מורשים</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --border: rgba(255,255,255,0.08);
+    --border2: rgba(255,255,255,0.15);
+    --accent: #5b6ef5;
+    --accent-dim: rgba(91,110,245,0.15);
+    --accent-hover: #6e80f7;
+    --text: #e8eaf6;
+    --muted: #7b82a8;
+    --danger: #f56565;
+    --danger-dim: rgba(245,101,101,0.12);
+    --success: #48bb78;
+    --success-dim: rgba(72,187,120,0.12);
+    --radius: 10px;
+    --radius-lg: 16px;
+  }
+
+  html, body {
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Heebo', sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+  }
+
+  /* ——— layout ——— */
+  .shell {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 40px 16px 60px;
+  }
+
+  .logo-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 36px;
+    color: var(--muted);
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .logo-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent);
+  }
+
+  .card {
+    width: 100%;
+    max-width: 520px;
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 32px;
+  }
+
+  /* ——— auth screen ——— */
+  .auth-title {
+    font-size: 22px;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .auth-sub {
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 28px;
+  }
+
+  label {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 6px;
+    letter-spacing: 0.04em;
+  }
+
+  input[type="email"],
+  input[type="text"],
+  input[type="number"],
+  input[type="tel"] {
+    width: 100%;
+    height: 44px;
+    background: var(--surface2);
+    border: 0.5px solid var(--border2);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-family: 'Heebo', sans-serif;
+    font-size: 15px;
+    padding: 0 14px;
+    outline: none;
+    transition: border-color 0.15s;
+    direction: ltr;
+    text-align: left;
+  }
+  input:focus { border-color: var(--accent); }
+
+  .btn {
+    width: 100%;
+    height: 44px;
+    border: none;
+    border-radius: var(--radius);
+    font-family: 'Heebo', sans-serif;
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+    margin-top: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+  .btn:active { transform: scale(0.98); }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { opacity: 0.88; }
+  .btn-ghost {
+    background: var(--surface2);
+    color: var(--muted);
+    border: 0.5px solid var(--border2);
+    margin-top: 10px;
+    font-size: 13px;
+  }
+  .btn-ghost:hover { color: var(--text); border-color: var(--border2); background: #2a2f47; }
+
+  .msg {
+    font-size: 13px;
+    border-radius: var(--radius);
+    padding: 10px 14px;
+    margin-top: 14px;
+    display: none;
+  }
+  .msg.err { background: var(--danger-dim); color: var(--danger); }
+  .msg.ok  { background: var(--success-dim); color: var(--success); }
+  .msg.show { display: block; }
+
+  /* ——— admin panel ——— */
+  #panel { display: none; width: 100%; max-width: 560px; }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+  }
+  .panel-title { font-size: 20px; font-weight: 600; }
+  .logout-btn {
+    font-size: 12px;
+    color: var(--muted);
+    background: none;
+    border: 0.5px solid var(--border2);
+    border-radius: 6px;
+    padding: 4px 12px;
+    cursor: pointer;
+    font-family: 'Heebo', sans-serif;
+  }
+  .logout-btn:hover { color: var(--text); }
+
+  .add-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+  .add-row input { margin: 0; flex: 1; }
+  .add-btn {
+    height: 44px;
+    padding: 0 20px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    font-family: 'Heebo', sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: opacity 0.15s;
+    flex-shrink: 0;
+  }
+  .add-btn:hover { opacity: 0.85; }
+
+  .list-box {
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    margin-bottom: 20px;
+  }
+  .list-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 18px;
+    background: var(--surface2);
+    border-bottom: 0.5px solid var(--border);
+    font-size: 12px;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+  }
+  .list-empty {
+    padding: 36px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .num-row {
+    display: flex;
+    align-items: center;
+    padding: 12px 18px;
+    border-bottom: 0.5px solid var(--border);
+    gap: 12px;
+    transition: background 0.1s;
+  }
+  .num-row:last-child { border-bottom: none; }
+  .num-row:hover { background: var(--surface2); }
+  .num-val {
+    flex: 1;
+    font-size: 15px;
+    font-weight: 400;
+    direction: ltr;
+    text-align: left;
+    letter-spacing: 0.03em;
+  }
+  .del-btn {
+    width: 30px; height: 30px;
+    border: none;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    border-radius: 6px;
+    font-size: 18px;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.12s, color 0.12s;
+  }
+  .del-btn:hover { background: var(--danger-dim); color: var(--danger); }
+
+  .bottom-row {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+  }
+  .sm-btn {
+    height: 38px;
+    padding: 0 16px;
+    border-radius: var(--radius);
+    font-family: 'Heebo', sans-serif;
+    font-size: 13px;
+    cursor: pointer;
+    border: 0.5px solid var(--border2);
+    background: var(--surface2);
+    color: var(--muted);
+    transition: color 0.12s, background 0.12s;
+  }
+  .sm-btn:hover { color: var(--text); background: #2a2f47; }
+  .sm-btn.primary { background: var(--accent); color: #fff; border-color: transparent; }
+  .sm-btn.primary:hover { opacity: 0.85; }
+
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(10px);
+    background: var(--surface2);
+    border: 0.5px solid var(--border2);
+    border-radius: var(--radius);
+    padding: 10px 20px;
+    font-size: 13px;
+    color: var(--text);
+    opacity: 0;
+    transition: opacity 0.2s, transform 0.2s;
+    pointer-events: none;
+    z-index: 99;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  .spinner {
+    width: 18px; height: 18px;
+    border: 2px solid rgba(255,255,255,0.2);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    display: none;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .step-indicator {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 24px;
+  }
+  .step { height: 3px; border-radius: 2px; flex: 1; background: var(--border2); transition: background 0.3s; }
+  .step.active { background: var(--accent); }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="logo-row">
+    <div class="logo-dot"></div>
+    נועם עוזר קולי
+  </div>
+
+  <!-- AUTH CARD -->
+  <div class="card" id="auth-card">
+    <div class="step-indicator">
+      <div class="step active" id="s1"></div>
+      <div class="step" id="s2"></div>
+    </div>
+
+    <!-- שלב 1: הכנסת מייל -->
+    <div id="step1">
+      <div class="auth-title">כניסה לניהול</div>
+      <div class="auth-sub">הכנס את כתובת המייל שלך לקבלת קוד אימות</div>
+      <label>כתובת מייל</label>
+      <input type="email" id="email-inp" placeholder="your@email.com" />
+      <div class="msg" id="msg1"></div>
+      <button class="btn btn-primary" onclick="sendCode()">
+        <span id="send-txt">שלח קוד אימות</span>
+        <div class="spinner" id="send-spin"></div>
+      </button>
+    </div>
+
+    <!-- שלב 2: הכנסת קוד -->
+    <div id="step2" style="display:none">
+      <div class="auth-title">הכנס קוד</div>
+      <div class="auth-sub" id="code-sub">נשלח קוד בן 6 ספרות לכתובת המייל שלך</div>
+      <label>קוד אימות</label>
+      <input type="text" id="code-inp" placeholder="123456" maxlength="6" inputmode="numeric" />
+      <div class="msg" id="msg2"></div>
+      <button class="btn btn-primary" onclick="verifyCode()">
+        <span id="verify-txt">אמת וכנס</span>
+        <div class="spinner" id="verify-spin"></div>
+      </button>
+      <button class="btn btn-ghost" onclick="backToEmail()">← שנה כתובת מייל</button>
+    </div>
+  </div>
+
+  <!-- ADMIN PANEL -->
+  <div id="panel">
+    <div class="panel-header">
+      <div class="panel-title">מספרים מורשים</div>
+      <button class="logout-btn" onclick="logout()">יציאה</button>
+    </div>
+
+    <div class="add-row">
+      <input type="tel" id="num-inp" placeholder="0501234567" maxlength="15" onkeydown="if(event.key==='Enter') addNumber()" />
+      <button class="add-btn" onclick="addNumber()">+ הוסף</button>
+    </div>
+    <div class="msg" id="add-msg" style="margin-top:0; margin-bottom:14px;"></div>
+
+    <div class="list-box">
+      <div class="list-head">
+        <span>רשימת גישה</span>
+        <span id="num-count">0 מספרים</span>
+      </div>
+      <div id="num-list"><div class="list-empty">אין מספרים ברשימה עדיין</div></div>
+    </div>
+
+    <div class="bottom-row">
+      <button class="sm-btn" onclick="clearAll()">מחק הכל</button>
+      <button class="sm-btn primary" onclick="saveToServer()">💾 שמור שינויים</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let sessionToken = null;
+let numbers = [];
+
+function showMsg(id, text, type) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = 'msg ' + type + ' show';
+}
+function hideMsg(id) {
+  const el = document.getElementById(id);
+  el.className = 'msg';
+}
+
+function setLoading(btnTxt, spinId, loading) {
+  document.getElementById(btnTxt).style.display = loading ? 'none' : 'inline';
+  document.getElementById(spinId).style.display = loading ? 'block' : 'none';
+}
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+async function sendCode() {
+  const email = document.getElementById('email-inp').value.trim();
+  if (!email || !email.includes('@')) { showMsg('msg1','הכנס כתובת מייל תקינה','err'); return; }
+  hideMsg('msg1');
+  setLoading('send-txt','send-spin',true);
+  try {
+    const res = await fetch('/admin/send-code', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({email})
+    });
+    const data = await res.json();
+    if (data.ok) {
+      document.getElementById('step1').style.display = 'none';
+      document.getElementById('step2').style.display = 'block';
+      document.getElementById('s2').classList.add('active');
+      document.getElementById('code-sub').textContent = 'נשלח קוד בן 6 ספרות אל ' + email;
+    } else {
+      showMsg('msg1', data.error || 'שגיאה בשליחת הקוד', 'err');
+    }
+  } catch(e) {
+    showMsg('msg1','שגיאת תקשורת עם השרת','err');
+  }
+  setLoading('send-txt','send-spin',false);
+}
+
+async function verifyCode() {
+  const email = document.getElementById('email-inp').value.trim();
+  const code = document.getElementById('code-inp').value.trim();
+  if (code.length !== 6) { showMsg('msg2','הקוד חייב להיות בן 6 ספרות','err'); return; }
+  hideMsg('msg2');
+  setLoading('verify-txt','verify-spin',true);
+  try {
+    const res = await fetch('/admin/verify-code', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({email, code})
+    });
+    const data = await res.json();
+    if (data.ok) {
+      sessionToken = data.token;
+      document.getElementById('auth-card').style.display = 'none';
+      document.getElementById('panel').style.display = 'block';
+      loadNumbers();
+    } else {
+      showMsg('msg2', data.error || 'קוד שגוי', 'err');
+    }
+  } catch(e) {
+    showMsg('msg2','שגיאת תקשורת עם השרת','err');
+  }
+  setLoading('verify-txt','verify-spin',false);
+}
+
+function backToEmail() {
+  document.getElementById('step1').style.display = 'block';
+  document.getElementById('step2').style.display = 'none';
+  document.getElementById('s2').classList.remove('active');
+  document.getElementById('code-inp').value = '';
+  hideMsg('msg2');
+}
+
+async function loadNumbers() {
+  const res = await fetch('/admin/numbers', {headers: {'X-Token': sessionToken}});
+  const data = await res.json();
+  numbers = data.numbers || [];
+  renderList();
+}
+
+function renderList() {
+  const list = document.getElementById('num-list');
+  document.getElementById('num-count').textContent = numbers.length + ' מספרים';
+  if (!numbers.length) {
+    list.innerHTML = '<div class="list-empty">אין מספרים ברשימה עדיין</div>';
+    return;
+  }
+  list.innerHTML = numbers.map((n,i) => `
+    <div class="num-row">
+      <span class="num-val">${n}</span>
+      <button class="del-btn" onclick="removeNum(${i})" title="הסר">×</button>
+    </div>
+  `).join('');
+}
+
+function normalize(n) { return n.replace(/[-\s]/g,''); }
+function isValid(n) { return /^0[5][0-9]{8}$/.test(n); }
+
+function addNumber() {
+  const inp = document.getElementById('num-inp');
+  const val = normalize(inp.value.trim());
+  hideMsg('add-msg');
+  if (!isValid(val)) { showMsg('add-msg','מספר לא תקין — נדרש מספר סלולרי ישראלי בן 10 ספרות','err'); return; }
+  if (numbers.includes(val)) { showMsg('add-msg','המספר כבר קיים ברשימה','err'); return; }
+  numbers.push(val);
+  renderList();
+  inp.value = '';
+  toast('המספר נוסף — אל תשכח לשמור');
+}
+
+function removeNum(i) {
+  numbers.splice(i,1);
+  renderList();
+  toast('המספר הוסר — אל תשכח לשמור');
+}
+
+function clearAll() {
+  if (!numbers.length) return;
+  if (!confirm('למחוק את כל המספרים?')) return;
+  numbers = [];
+  renderList();
+}
+
+async function saveToServer() {
+  try {
+    const res = await fetch('/admin/numbers', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','X-Token': sessionToken},
+      body: JSON.stringify({numbers})
+    });
+    const data = await res.json();
+    if (data.ok) toast('✓ השינויים נשמרו בהצלחה');
+    else toast('שגיאה בשמירה: ' + (data.error || ''));
+  } catch(e) {
+    toast('שגיאת תקשורת עם השרת');
+  }
+}
+
+function logout() {
+  sessionToken = null;
+  numbers = [];
+  document.getElementById('panel').style.display = 'none';
+  document.getElementById('auth-card').style.display = 'block';
+  document.getElementById('step1').style.display = 'block';
+  document.getElementById('step2').style.display = 'none';
+  document.getElementById('s2').classList.remove('active');
+  document.getElementById('email-inp').value = '';
+  document.getElementById('code-inp').value = '';
+}
+</script>
+</body>
+</html>
