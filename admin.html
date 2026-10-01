@@ -212,9 +212,10 @@ input:focus{border-color:var(--accent)}
 <script>
 let token = null;
 let numbers = [];
+let numbersLoaded = false; // נשמר רק אחרי שהרשימה נטענה בהצלחה מהשרת
 
 /* ── utils ── */
-function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500)}
+function toast(msg,ms){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),ms||2500)}
 function showMsg(id,txt,type){const e=document.getElementById(id);e.textContent=txt;e.className='msg '+(type||'err')}
 function hideMsg(id){document.getElementById(id).className='msg'}
 function setLoad(txtId,spinId,on){document.getElementById(txtId).style.display=on?'none':'inline';document.getElementById(spinId).style.display=on?'block':'none'}
@@ -265,7 +266,7 @@ function backToEmail(){
 }
 
 function logout(){
-  token=null;numbers=[];
+  token=null;numbers=[];numbersLoaded=false;
   document.getElementById('admin-shell').style.display='none';
   document.getElementById('auth-wrap').style.display='flex';
   document.getElementById('email-inp').value='';
@@ -338,9 +339,16 @@ function renderKeys(keys){
 
 /* ── numbers ── */
 async function loadNumbers(){
-  const res=await fetch('/admin/numbers',{headers:{'X-Token':token}});
-  const d=await res.json();
-  if(d.ok){numbers=d.numbers;renderList()}
+  numbersLoaded=false;
+  try{
+    const res=await fetch('/admin/numbers',{headers:{'X-Token':token}});
+    if(res.status===401){toast('החיבור פג — יש להתחבר מחדש',6000);logout();return}
+    const d=await res.json();
+    if(d.ok){numbers=d.numbers;numbersLoaded=true;renderList()}
+    else toast('שגיאה בטעינת הרשימה: '+(d.error||'')+' — שמירה חסומה עד שהטעינה תצליח',6000);
+  }catch(e){
+    toast('שגיאת רשת בטעינת הרשימה — שמירה חסומה עד שהטעינה תצליח',6000);
+  }
 }
 
 function normalize(n){return n.replace(/[-\s]/g,'')}
@@ -381,9 +389,16 @@ function clearAll(){
 }
 
 async function saveNumbers(){
-  const res=await fetch('/admin/numbers',{method:'POST',headers:{'Content-Type':'application/json','X-Token':token},body:JSON.stringify({numbers})});
-  const d=await res.json();
-  toast(d.ok?'✓ נשמר בהצלחה':'שגיאה: '+(d.error||''));
+  // הגנה: לא שומרים לפני שהרשימה הקיימת נטענה, אחרת השמירה תדרוס אותה
+  if(!numbersLoaded){toast('הרשימה לא נטענה מהשרת — לא נשמר, כדי לא למחוק מספרים. רענן את הדף והתחבר מחדש',6000);return}
+  try{
+    const res=await fetch('/admin/numbers',{method:'POST',headers:{'Content-Type':'application/json','X-Token':token},body:JSON.stringify({numbers,confirm_empty:true})});
+    if(res.status===401){toast('החיבור פג — יש להתחבר מחדש',6000);logout();return}
+    const d=await res.json();
+    toast(d.ok?'✓ נשמר בהצלחה':'שגיאה: '+(d.error||''),d.ok?2500:6000);
+  }catch(e){
+    toast('שגיאת רשת — לא נשמר',6000);
+  }
 }
 </script>
 </body>

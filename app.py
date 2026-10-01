@@ -36,6 +36,7 @@ DATABASE_URL       = os.environ.get("DATABASE_URL")
 MODEL_NAME         = "gemini-2.5-flash"
 GROQ_CHAT_MODEL    = "llama-3.1-8b-instant"
 GROQ_WHISPER_MODEL = "whisper-large-v3-turbo"
+MAX_TOOL_ROUNDS     = 2  # כמה פעמים Gemini רשאי לבקש חיפוש בוויקיפדיה בשיחה אחת
 ADMIN_HTML_FILE    = "admin.html"
 
 auth_codes     = {}
@@ -54,6 +55,7 @@ session.mount("https://", adapter)
 
 RECORD_COMMAND = "user_audio,no,record,,,yes,yes,no,1,120"
 search_cache   = {}
+executor       = ThreadPoolExecutor(max_workers=4)
 query_locks    = defaultdict(Lock)
 
 # ── PostgreSQL ──────────────────────────────────────────────
@@ -178,6 +180,7 @@ def clean_text(text):
 
 def perform_wikipedia_search(call_id, query):
     query = re.sub(r'[^\u0590-\u05FFa-zA-Z0-9\s]', ' ', query).strip()
+    log_event(call_id, "wikipedia_search", query=query)
     if not query: return "לא צוין מושג תקין לחיפוש"
     with query_locks[query]:
         if query in search_cache: return search_cache[query]['result']
@@ -200,6 +203,24 @@ def perform_wikipedia_search(call_id, query):
 def wikipedia_search(query: str) -> str:
     """Search Wikipedia to get accurate information about terms, people or events."""
     return query
+
+def transcribe_audio(call_id, audio_bytes):
+    """תמלול עברית דרך Groq Whisper. מחזיר מחרוזת ריקה אם נכשל — לא זורק שגיאה."""
+    if not GROQ_API_KEY:
+        return ""
+    try:
+        r = session.post(
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            files={"file": ("audio.wav", audio_bytes, "audio/wav")},
+            data={"model": GROQ_WHISPER_MODEL, "language": "he"},
+            timeout=15
+        )
+        r.raise_for_status()
+        return (r.json().get("text") or "").strip()
+    except Exception as e:
+        log_event(call_id, "transcribe_error", error=str(e))
+        return ""
 
 # ══════════════════════════════════════════════════════════════
 # Admin routes
@@ -303,17 +324,27 @@ def admin_get_numbers():
 def admin_save_numbers():
     if not require_session():
         return jsonify({"ok": False, "error": "לא מורשה"}), 401
-    data    = request.get_json(force=True)
-    numbers = data.get('numbers', [])
+    data = request.get_json(force=True)
+    raw  = data.get('numbers')
+    if not isinstance(raw, list):
+        return jsonify({"ok": False, "error": "פורמט לא תקין"}), 400
+    numbers = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        phone = str(item.get('phone', '')).strip()
+        label = str(item.get('label', '')).strip()
+        if phone:
+            numbers.append((phone, label))
+    # הגנה: רשימה ריקה נשמרת רק באישור מפורש מהלקוח (מונע מחיקת כל המספרים בטעות)
+    if not numbers and data.get('confirm_empty') is not True:
+        return jsonify({"ok": False, "error": "הרשימה ריקה — לא נשמר כדי למנוע מחיקה בטעות"}), 400
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM allowed_numbers")
-                for item in numbers:
-                    phone = item.get('phone', '').strip()
-                    label = item.get('label', '').strip()
-                    if phone:
-                        cur.execute("INSERT INTO allowed_numbers (phone, label) VALUES (%s,%s) ON CONFLICT DO NOTHING", (phone, label))
+                for phone, label in numbers:
+                    cur.execute("INSERT INTO allowed_numbers (phone, label) VALUES (%s,%s) ON CONFLICT DO NOTHING", (phone, label))
             conn.commit()
         return jsonify({"ok": True})
     except Exception as e:
@@ -411,29 +442,54 @@ def ai_chat():
             types.Part(text="הקשב לקובץ השמע המצורף וענה למשתמש בעברית תשובה קצרה מאוד של עד שלושה משפטים וללא סימני פיסוק כלל.")
         ]))
 
+        # תמלול ברקע, במקביל ל-Gemini, כדי לשמור בהיסטוריה גם מה שהמשתמש אמר
+        transcript_future = executor.submit(transcribe_audio, call_id, audio_res.content)
+
+        def get_transcript(timeout):
+            try:
+                return transcript_future.result(timeout=timeout)
+            except Exception:
+                return ""
+
         gemini_keys   = [k for k in [GEMINI_API_KEY, GEMINI_API_KEY_2] if k]
         response_text = None
-        user_content_for_history = "[קובץ שמע]"
 
         for idx, current_key in enumerate(gemini_keys):
             try:
                 local_client = genai.Client(api_key=current_key)
-                response = local_client.models.generate_content(
-                    model=MODEL_NAME, contents=contents,
-                    config=types.GenerateContentConfig(system_instruction=system_prompt, tools=[wikipedia_search])
-                )
-                if response.function_calls:
-                    call = response.function_calls[0]
-                    res  = perform_wikipedia_search(call_id, call.args.get("query", ""))
-                    contents.append(response.candidates[0].content)
-                    contents.append(types.Content(role="user", parts=[
-                        types.Part.from_function_response(name="wikipedia_search", response={"result": res})
-                    ]))
-                    response = local_client.models.generate_content(
-                        model=MODEL_NAME, contents=contents,
-                        config=types.GenerateContentConfig(system_instruction=system_prompt)
+                key_contents = list(contents)  # עותק, כדי ששגיאה במפתח אחד לא תלכלך את הניסיון במפתח הבא
+                response = None
+
+                for round_no in range(MAX_TOOL_ROUNDS + 1):
+                    allow_tools = round_no < MAX_TOOL_ROUNDS
+                    config = types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        tools=[wikipedia_search],
+                        # בלי זה ה-SDK מריץ את wikipedia_search בעצמו (שרק מחזירה את השאלה) ומדלג על החיפוש האמיתי
+                        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                        # בסבב האחרון אוסרים קריאה לכלים, כדי שנקבל תשובת טקסט
+                        tool_config=None if allow_tools else types.ToolConfig(
+                            function_calling_config=types.FunctionCallingConfig(mode="NONE")
+                        ),
                     )
+                    response = local_client.models.generate_content(
+                        model=MODEL_NAME, contents=key_contents, config=config
+                    )
+                    if not response.function_calls:
+                        break
+
+                    key_contents.append(response.candidates[0].content)
+                    parts = []
+                    for call in response.function_calls:
+                        res = perform_wikipedia_search(call_id, (call.args or {}).get("query", ""))
+                        parts.append(types.Part.from_function_response(
+                            name=call.name, response={"result": res}
+                        ))
+                    key_contents.append(types.Content(role="user", parts=parts))
+
                 temp_text = response.text or ""
+                if not temp_text.strip():
+                    raise Exception("Gemini returned empty text")
                 if "מצטער" in temp_text and "להקשיב" in temp_text:
                     raise Exception("Gemini hallucinated refusal")
                 response_text = response.text
@@ -448,16 +504,9 @@ def ai_chat():
         if not response_text:
             if GROQ_API_KEY:
                 try:
-                    whisper_res = session.post(
-                        "https://api.groq.com/openai/v1/audio/transcriptions",
-                        headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-                        files={"file": ("audio.wav", audio_res.content, "audio/wav")},
-                        data={"model": GROQ_WHISPER_MODEL, "language": "he"},
-                        timeout=15
-                    )
-                    whisper_res.raise_for_status()
-                    user_transcription = whisper_res.json().get("text", "")
-                    user_content_for_history = f"🎙️ {user_transcription}"
+                    user_transcription = get_transcript(15)
+                    if not user_transcription:
+                        raise Exception("Whisper transcription failed or empty")
 
                     chat_res = session.post(
                         "https://api.groq.com/openai/v1/chat/completions",
@@ -479,6 +528,7 @@ def ai_chat():
                 raise Exception("Gemini failed and no Groq key")
 
         ai_reply = clean_text(response_text)
+        user_content_for_history = get_transcript(3) or "[קובץ שמע]"
         history.extend([{"role": "user", "content": user_content_for_history},
                          {"role": "assistant", "content": ai_reply}])
         save_chat_data(caller_id, history, known_name)
