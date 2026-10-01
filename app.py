@@ -239,15 +239,10 @@ def admin_send_code():
             </tr>
             <tr>
               <td style="padding:32px;text-align:center;">
-                <p style="color:#7b82a8;font-size:14px;margin:0 0 24px;">הקוד שלך לכניסה לדף הניהול:</p>
-                <div style="background:#0f1117;border:1px solid rgba(91,110,245,0.4);border-radius:12px;padding:20px 32px;display:inline-block;margin-bottom:24px;">
+                <p style="color:#7b82a8;font-size:14px;margin:0 0 24px;">הקוד שלך לכניסה לדף הניהול (לחיצה כפולה על המספר כדי להעתיק):</p>
+                <div style="background:#0f1117;border:1px solid rgba(91,110,245,0.4);border-radius:12px;padding:20px 32px;display:inline-block;margin-bottom:24px;user-select:all;">
                   <span style="font-size:42px;font-weight:700;letter-spacing:14px;color:#5b6ef5;font-family:monospace;">{code}</span>
                 </div>
-                <br>
-                <a href="#" onclick="navigator.clipboard.writeText('{code}')"
-                   style="display:inline-block;background:#5b6ef5;color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-size:15px;font-weight:600;margin-bottom:24px;">
-                  📋 העתק קוד
-                </a>
                 <p style="color:#4a5175;font-size:12px;margin:0;">הקוד תקף ל-5 דקות בלבד</p>
               </td>
             </tr>
