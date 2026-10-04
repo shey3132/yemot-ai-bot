@@ -55,6 +55,7 @@ session.mount("https://", adapter)
 
 RECORD_COMMAND = "user_audio,no,record,,,yes,yes,no,1,120"
 search_cache   = {}
+executor       = ThreadPoolExecutor(max_workers=4)
 query_locks    = defaultdict(Lock)
 
 # ── PostgreSQL ──────────────────────────────────────────────
@@ -229,6 +230,29 @@ def drop_refusals_from_history(history):
         out.append(h)
     return out
 
+BIDI_CHARS = {ord(c): None for c in "\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"}
+
+def clean_transcript(text):
+    """מנקה תמלול Whisper: מסיר תווי כיווניות נסתרים, ומקצר לולאות שחוזרות 3 פעמים ויותר ('X X X' -> 'X')."""
+    words = (text or "").translate(BIDI_CHARS).split()
+    norm  = [re.sub(r"[^\w]", "", w) for w in words]
+    out, i = [], 0
+    while i < len(words):
+        collapsed = False
+        for n in range(1, 9):
+            block = norm[i:i + n]
+            if len(block) < n or not any(block):
+                continue
+            reps = 1
+            while norm[i + reps * n: i + (reps + 1) * n] == block:
+                reps += 1
+            if reps >= 3:
+                out.extend(words[i:i + n]); i += reps * n; collapsed = True
+                break
+        if not collapsed:
+            out.append(words[i]); i += 1
+    return " ".join(out).strip()
+
 def transcribe_audio(call_id, audio_bytes):
     """תמלול עברית דרך Groq Whisper. מחזיר מחרוזת ריקה אם נכשל — לא זורק שגיאה."""
     if not GROQ_API_KEY:
@@ -242,7 +266,7 @@ def transcribe_audio(call_id, audio_bytes):
             timeout=8
         )
         r.raise_for_status()
-        return (r.json().get("text") or "").strip()
+        return clean_transcript(r.json().get("text") or "")
     except Exception as e:
         log_event(call_id, "transcribe_error", error=str(e))
         return ""
@@ -250,6 +274,11 @@ def transcribe_audio(call_id, audio_bytes):
 # ══════════════════════════════════════════════════════════════
 # Admin routes
 # ══════════════════════════════════════════════════════════════
+
+@app.route('/health', methods=['GET'])
+def health():
+    # בדיקת חיים קלה (בלי DB), כדי ששירות פינג חיצוני ימנע מ-Render להירדם
+    return "ok", 200
 
 @app.route('/admin', methods=['GET'])
 def admin_page():
@@ -458,14 +487,23 @@ def ai_chat():
             "You CAN understand spoken audio. Never say that you cannot process audio or audio files. "
             "CRITICAL RULE: Keep your answers VERY SHORT, concise, and conversational. "
             "Respond in 1 to 3 short sentences MAXIMUM per answer. "
+            "When asked about a person, place, event or any fact you are not completely sure about, "
+            "call the wikipedia_search tool first and answer from its result. "
+            "Never promise to get back to the user later and never say that you are still searching. "
+            "Answer in this same reply, or say briefly that you do not know. "
             "FORMAT RULE: Do NOT use any punctuation marks whatsoever. "
             "Use only clear Hebrew letters and spaces. Never output English or internal thoughts."
         )
 
-        # תמלול Whisper משמש כרמז בלבד: Gemini שומע את ההקלטה עצמה, כי התמלול עלול לטעות
-        # (בטלפון, 8kHz). אם Gemini מסרב להבין שמע — עוברים לשליחת התמלול כטקסט בלבד.
-        transcript = transcribe_audio(call_id, audio_res.content)
-        log_event(call_id, "user_said", text=transcript)
+        # Gemini שומע את ההקלטה עצמה. Whisper רץ במקביל, בלי לעכב, ומשמש רק כגיבוי
+        # (אם Gemini מסרב להבין שמע, או אם הוא נכשל ועוברים ל-Groq) ולשמירת ההיסטוריה.
+        transcript_future = executor.submit(transcribe_audio, call_id, audio_res.content)
+
+        def get_transcript(timeout):
+            try:
+                return transcript_future.result(timeout=timeout)
+            except Exception:
+                return ""
 
         history = drop_refusals_from_history(history)
         history_contents = [types.Content(role='user' if h['role'] == 'user' else 'model',
@@ -474,14 +512,10 @@ def ai_chat():
 
         def build_contents(send_audio):
             if send_audio:
-                text_part = AUDIO_INSTRUCTION
-                if transcript:
-                    text_part += (" תמלול אוטומטי של ההקלטה, שעלול להכיל טעויות. "
-                                  "אם הוא סותר את מה ששומעים בהקלטה התעלם ממנו: " + transcript)
                 parts = [types.Part.from_bytes(data=audio_res.content, mime_type="audio/wav"),
-                         types.Part(text=text_part)]
+                         types.Part(text=AUDIO_INSTRUCTION)]
             else:
-                parts = [types.Part(text=transcript)]
+                parts = [types.Part(text=get_transcript(8))]
             return history_contents + [types.Content(role="user", parts=parts)]
 
         send_audio    = True
@@ -534,7 +568,7 @@ def ai_chat():
                 if "מצטער" in temp_text and "להקשיב" in temp_text:
                     raise Exception("Gemini hallucinated refusal")
                 if send_audio and looks_like_audio_refusal(temp_text):
-                    if transcript:
+                    if get_transcript(8):
                         send_audio = False     # בניסיון הבא נשלח רק את התמלול
                         audio_refused = True
                     raise Exception("Gemini refused audio: " + temp_text[:80])
@@ -553,7 +587,7 @@ def ai_chat():
         if not response_text:
             if GROQ_API_KEY:
                 try:
-                    user_transcription = transcript
+                    user_transcription = get_transcript(15)
                     if not user_transcription:
                         raise Exception("Whisper transcription failed or empty")
 
@@ -583,6 +617,8 @@ def ai_chat():
                 raise Exception("Gemini failed and no Groq key")
 
         ai_reply = clean_text(response_text)
+        transcript = get_transcript(3)
+        log_event(call_id, "user_said", text=transcript)
         user_content_for_history = transcript or "[קובץ שמע]"
         log_event(call_id, "bot_reply", text=ai_reply)
         history.extend([{"role": "user", "content": user_content_for_history},
