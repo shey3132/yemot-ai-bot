@@ -35,7 +35,7 @@ DATABASE_URL       = os.environ.get("DATABASE_URL")
 
 MODEL_NAME         = "gemini-2.5-flash"
 GROQ_CHAT_MODEL    = "llama-3.1-8b-instant"
-GROQ_WHISPER_MODEL = "whisper-large-v3-turbo"
+GROQ_WHISPER_MODEL = os.environ.get("GROQ_WHISPER_MODEL", "whisper-large-v3")  # המדויק יותר; אפשר להחליף ל-whisper-large-v3-turbo דרך משתנה סביבה
 MAX_TOOL_ROUNDS     = 2  # כמה פעמים Gemini רשאי לבקש חיפוש בוויקיפדיה בשיחה אחת
 ADMIN_HTML_FILE    = "admin.html"
 
@@ -231,7 +231,7 @@ def transcribe_audio(call_id, audio_bytes):
             "https://api.groq.com/openai/v1/audio/transcriptions",
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
             files={"file": ("audio.wav", audio_bytes, "audio/wav")},
-            data={"model": GROQ_WHISPER_MODEL, "language": "he"},
+            data={"model": GROQ_WHISPER_MODEL, "language": "he", "temperature": "0"},
             timeout=8
         )
         r.raise_for_status()
