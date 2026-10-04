@@ -55,7 +55,6 @@ session.mount("https://", adapter)
 
 RECORD_COMMAND = "user_audio,no,record,,,yes,yes,no,1,120"
 search_cache   = {}
-executor       = ThreadPoolExecutor(max_workers=4)
 query_locks    = defaultdict(Lock)
 
 # ── PostgreSQL ──────────────────────────────────────────────
@@ -204,6 +203,25 @@ def wikipedia_search(query: str) -> str:
     """Search Wikipedia to get accurate information about terms, people or events."""
     return query
 
+AUDIO_WORDS  = ("שמע", "אודיו", "הקלט", "audio")
+REFUSE_WORDS = ("לא יכול", "לא מסוגל", "אינני יכול", "אינני מסוגל", "אין לי יכולת", "מצטער", "cannot", "can't")
+
+def looks_like_audio_refusal(text):
+    """מזהה תשובה של Gemini בסגנון 'אני לא יכול לענות על קבצי שמע'."""
+    t = text or ""
+    return any(w in t for w in AUDIO_WORDS) and any(w in t for w in REFUSE_WORDS)
+
+def drop_refusals_from_history(history):
+    """מסיר מההיסטוריה סירובים כאלה (ואת השאלה שלפניהם), כדי שהמודל לא ימשיך לחקות אותם."""
+    out = []
+    for h in history:
+        if h.get("role") == "assistant" and looks_like_audio_refusal(h.get("content")):
+            if out and out[-1].get("role") == "user":
+                out.pop()
+            continue
+        out.append(h)
+    return out
+
 def transcribe_audio(call_id, audio_bytes):
     """תמלול עברית דרך Groq Whisper. מחזיר מחרוזת ריקה אם נכשל — לא זורק שגיאה."""
     if not GROQ_API_KEY:
@@ -214,7 +232,7 @@ def transcribe_audio(call_id, audio_bytes):
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
             files={"file": ("audio.wav", audio_bytes, "audio/wav")},
             data={"model": GROQ_WHISPER_MODEL, "language": "he"},
-            timeout=15
+            timeout=8
         )
         r.raise_for_status()
         return (r.json().get("text") or "").strip()
@@ -429,27 +447,29 @@ def ai_chat():
 
         system_prompt = (
             "You are Noam, a helpful and friendly voice assistant on a phone call. "
+            "The user speaks Hebrew. Their message arrives either as a voice recording or as its transcript. "
+            "You CAN understand spoken audio. Never say that you cannot process audio or audio files. "
             "CRITICAL RULE: Keep your answers VERY SHORT, concise, and conversational. "
             "Respond in 1 to 3 short sentences MAXIMUM per answer. "
             "FORMAT RULE: Do NOT use any punctuation marks whatsoever. "
             "Use only clear Hebrew letters and spaces. Never output English or internal thoughts."
         )
 
+        # קודם מתמללים (Whisper) ושולחים ל-Gemini טקסט — אמין יותר מהבנת אודיו ישירה.
+        # אם התמלול נכשל, שולחים את קובץ השמע כמו קודם.
+        transcript = transcribe_audio(call_id, audio_res.content)
+        log_event(call_id, "user_said", text=transcript)
+
+        history = drop_refusals_from_history(history)
         contents = [types.Content(role='user' if h['role'] == 'user' else 'model',
                                   parts=[types.Part(text=h['content'])]) for h in history]
-        contents.append(types.Content(role="user", parts=[
-            types.Part.from_bytes(data=audio_res.content, mime_type="audio/wav"),
-            types.Part(text="הקשב לקובץ השמע המצורף וענה למשתמש בעברית תשובה קצרה מאוד של עד שלושה משפטים וללא סימני פיסוק כלל.")
-        ]))
-
-        # תמלול ברקע, במקביל ל-Gemini, כדי לשמור בהיסטוריה גם מה שהמשתמש אמר
-        transcript_future = executor.submit(transcribe_audio, call_id, audio_res.content)
-
-        def get_transcript(timeout):
-            try:
-                return transcript_future.result(timeout=timeout)
-            except Exception:
-                return ""
+        if transcript:
+            contents.append(types.Content(role="user", parts=[types.Part(text=transcript)]))
+        else:
+            contents.append(types.Content(role="user", parts=[
+                types.Part.from_bytes(data=audio_res.content, mime_type="audio/wav"),
+                types.Part(text="הקשב לקובץ השמע המצורף וענה למשתמש בעברית תשובה קצרה מאוד של עד שלושה משפטים וללא סימני פיסוק כלל.")
+            ]))
 
         gemini_keys   = [k for k in [GEMINI_API_KEY, GEMINI_API_KEY_2] if k]
         response_text = None
@@ -492,6 +512,8 @@ def ai_chat():
                     raise Exception("Gemini returned empty text")
                 if "מצטער" in temp_text and "להקשיב" in temp_text:
                     raise Exception("Gemini hallucinated refusal")
+                if not transcript and looks_like_audio_refusal(temp_text):
+                    raise Exception("Gemini refused audio: " + temp_text[:80])
                 response_text = response.text
                 log_api_stat(call_id, "gemini", idx + 1, True)
                 log_event(call_id, f"gemini_key_{idx+1}_success")
@@ -504,7 +526,7 @@ def ai_chat():
         if not response_text:
             if GROQ_API_KEY:
                 try:
-                    user_transcription = get_transcript(15)
+                    user_transcription = transcript
                     if not user_transcription:
                         raise Exception("Whisper transcription failed or empty")
 
@@ -528,7 +550,8 @@ def ai_chat():
                 raise Exception("Gemini failed and no Groq key")
 
         ai_reply = clean_text(response_text)
-        user_content_for_history = get_transcript(3) or "[קובץ שמע]"
+        user_content_for_history = transcript or "[קובץ שמע]"
+        log_event(call_id, "bot_reply", text=ai_reply)
         history.extend([{"role": "user", "content": user_content_for_history},
                          {"role": "assistant", "content": ai_reply}])
         save_chat_data(caller_id, history, known_name)
