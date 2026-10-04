@@ -34,7 +34,7 @@ TARGET_EMAIL       = os.environ.get("TARGET_EMAIL")
 DATABASE_URL       = os.environ.get("DATABASE_URL")
 
 MODEL_NAME         = "gemini-2.5-flash"
-GROQ_CHAT_MODEL    = "llama-3.1-8b-instant"
+GROQ_CHAT_MODEL    = os.environ.get("GROQ_CHAT_MODEL", "openai/gpt-oss-20b")  # llama-3.1-8b-instant הושבת ב-Groq ב-16.8.2026
 GROQ_WHISPER_MODEL = os.environ.get("GROQ_WHISPER_MODEL", "whisper-large-v3")  # המדויק יותר; אפשר להחליף ל-whisper-large-v3-turbo דרך משתנה סביבה
 MAX_TOOL_ROUNDS     = 2  # כמה פעמים Gemini רשאי לבקש חיפוש בוויקיפדיה בשיחה אחת
 ADMIN_HTML_FILE    = "admin.html"
@@ -177,18 +177,23 @@ def clean_text(text):
     text = re.sub(r'[^\u0590-\u05FFa-zA-Z0-9\s]', '', text)
     return " ".join(text.split())
 
+WIKI_HEADERS = {"User-Agent": "YemotAIBot/1.0 (https://github.com/shey3132/yemot-ai-bot)"}
+
 def perform_wikipedia_search(call_id, query):
     query = re.sub(r'[^\u0590-\u05FFa-zA-Z0-9\s]', ' ', query).strip()
     log_event(call_id, "wikipedia_search", query=query)
     if not query: return "לא צוין מושג תקין לחיפוש"
     with query_locks[query]:
         if query in search_cache: return search_cache[query]['result']
+        res = None
         try:
-            res = session.get("https://he.wikipedia.org/w/api.php", params={"action":"query","list":"search","srsearch":query,"format":"json","srlimit":1}, timeout=10)
+            res = session.get("https://he.wikipedia.org/w/api.php", params={"action":"query","list":"search","srsearch":query,"format":"json","srlimit":1}, headers=WIKI_HEADERS, timeout=10)
+            res.raise_for_status()
             data = res.json().get("query", {}).get("search", [])
             if not data: return "לא נמצא מידע"
             title = data[0]["title"]
-            res = session.get("https://he.wikipedia.org/w/api.php", params={"action":"query","prop":"extracts","exintro":True,"explaintext":True,"titles":title,"format":"json"}, timeout=10)
+            res = session.get("https://he.wikipedia.org/w/api.php", params={"action":"query","prop":"extracts","exintro":True,"explaintext":True,"titles":title,"format":"json"}, headers=WIKI_HEADERS, timeout=10)
+            res.raise_for_status()
             pages = res.json().get("query", {}).get("pages", {})
             page_id = list(pages.keys())[0]
             extract = pages[page_id].get("extract", "")[:600]
@@ -196,7 +201,9 @@ def perform_wikipedia_search(call_id, query):
             search_cache[query] = {'result': result, 'time': time.time()}
             return result
         except Exception as e:
-            log_event(call_id, "wikipedia_error", error=str(e))
+            log_event(call_id, "wikipedia_error", error=str(e),
+                      status=(res.status_code if res is not None else None),
+                      body=(res.text[:120] if res is not None else ""))
             return "תקלה בחיפוש בויקיפדיה"
 
 def wikipedia_search(query: str) -> str:
@@ -455,29 +462,43 @@ def ai_chat():
             "Use only clear Hebrew letters and spaces. Never output English or internal thoughts."
         )
 
-        # קודם מתמללים (Whisper) ושולחים ל-Gemini טקסט — אמין יותר מהבנת אודיו ישירה.
-        # אם התמלול נכשל, שולחים את קובץ השמע כמו קודם.
+        # תמלול Whisper משמש כרמז בלבד: Gemini שומע את ההקלטה עצמה, כי התמלול עלול לטעות
+        # (בטלפון, 8kHz). אם Gemini מסרב להבין שמע — עוברים לשליחת התמלול כטקסט בלבד.
         transcript = transcribe_audio(call_id, audio_res.content)
         log_event(call_id, "user_said", text=transcript)
 
         history = drop_refusals_from_history(history)
-        contents = [types.Content(role='user' if h['role'] == 'user' else 'model',
-                                  parts=[types.Part(text=h['content'])]) for h in history]
-        if transcript:
-            contents.append(types.Content(role="user", parts=[types.Part(text=transcript)]))
-        else:
-            contents.append(types.Content(role="user", parts=[
-                types.Part.from_bytes(data=audio_res.content, mime_type="audio/wav"),
-                types.Part(text="הקשב לקובץ השמע המצורף וענה למשתמש בעברית תשובה קצרה מאוד של עד שלושה משפטים וללא סימני פיסוק כלל.")
-            ]))
+        history_contents = [types.Content(role='user' if h['role'] == 'user' else 'model',
+                                          parts=[types.Part(text=h['content'])]) for h in history]
+        AUDIO_INSTRUCTION = "הקשב להקלטה המצורפת וענה למשתמש בעברית תשובה קצרה מאוד של עד שלושה משפטים וללא סימני פיסוק כלל."
+
+        def build_contents(send_audio):
+            if send_audio:
+                text_part = AUDIO_INSTRUCTION
+                if transcript:
+                    text_part += (" תמלול אוטומטי של ההקלטה, שעלול להכיל טעויות. "
+                                  "אם הוא סותר את מה ששומעים בהקלטה התעלם ממנו: " + transcript)
+                parts = [types.Part.from_bytes(data=audio_res.content, mime_type="audio/wav"),
+                         types.Part(text=text_part)]
+            else:
+                parts = [types.Part(text=transcript)]
+            return history_contents + [types.Content(role="user", parts=parts)]
+
+        send_audio    = True
+        audio_refused = False
 
         gemini_keys   = [k for k in [GEMINI_API_KEY, GEMINI_API_KEY_2] if k]
         response_text = None
 
-        for idx, current_key in enumerate(gemini_keys):
+        attempts = list(enumerate(gemini_keys))
+        attempt_no = 0
+        while attempt_no < len(attempts):
+            idx, current_key = attempts[attempt_no]
+            attempt_no += 1
             try:
                 local_client = genai.Client(api_key=current_key)
-                key_contents = list(contents)  # עותק, כדי ששגיאה במפתח אחד לא תלכלך את הניסיון במפתח הבא
+                key_contents = build_contents(send_audio)  # רשימה חדשה לכל ניסיון, כדי שכשל לא ילכלך את הבא
+                log_event(call_id, "gemini_attempt", key=idx + 1, mode="audio" if send_audio else "text")
                 response = None
 
                 for round_no in range(MAX_TOOL_ROUNDS + 1):
@@ -512,7 +533,10 @@ def ai_chat():
                     raise Exception("Gemini returned empty text")
                 if "מצטער" in temp_text and "להקשיב" in temp_text:
                     raise Exception("Gemini hallucinated refusal")
-                if not transcript and looks_like_audio_refusal(temp_text):
+                if send_audio and looks_like_audio_refusal(temp_text):
+                    if transcript:
+                        send_audio = False     # בניסיון הבא נשלח רק את התמלול
+                        audio_refused = True
                     raise Exception("Gemini refused audio: " + temp_text[:80])
                 response_text = response.text
                 log_api_stat(call_id, "gemini", idx + 1, True)
@@ -521,6 +545,9 @@ def ai_chat():
             except Exception as gemini_err:
                 log_api_stat(call_id, "gemini", idx + 1, False)
                 log_event(call_id, f"gemini_key_{idx+1}_failed", error=str(gemini_err))
+                if audio_refused:
+                    audio_refused = False
+                    attempts.insert(attempt_no, (idx, current_key))  # אותו מפתח שוב, הפעם עם תמלול בלבד
                 continue
 
         if not response_text:
@@ -544,7 +571,13 @@ def ai_chat():
                     response_text = chat_res.json()['choices'][0]['message']['content']
                     log_api_stat(call_id, "groq", 1, True)
                 except Exception as groq_err:
+                    body = ""
+                    try:
+                        body = groq_err.response.text[:200]
+                    except Exception:
+                        pass
                     log_api_stat(call_id, "groq", 1, False)
+                    log_event(call_id, "groq_failed", error=str(groq_err), body=body)
                     raise Exception("All APIs exhausted")
             else:
                 raise Exception("Gemini failed and no Groq key")
@@ -562,12 +595,13 @@ def ai_chat():
         log_event(call_id, "global_exception", error=str(e))
         err = str(e).lower()
         if "exhausted" in err or "429" in err:
-            msg = "חלקה שגיאה זמנית עקב עומס אנא נסו שוב בעוד כמה דקות"
+            msg = "המערכת עמוסה כרגע אנא נסו שוב"
         elif "timeout" in err or "connection" in err:
             msg = "החיבור לשרת נתקע אנא נסו שוב"
         else:
-            msg = "חלקה שגיאה טכנית זמנית אנא נסו שוב מאוחר יותר"
-        return Response(f"read=t-{clean_text(msg)}", mimetype='text/plain')
+            msg = "חלה שגיאה זמנית אנא נסו שוב"
+        # חשוב: ממשיכים לפקודת ההקלטה, אחרת ימות המשיח מנתקים את השיחה אחרי ההודעה
+        return Response(f"read=t-{clean_text(msg)}={RECORD_COMMAND}", mimetype='text/plain')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
