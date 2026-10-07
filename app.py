@@ -38,6 +38,10 @@ GROQ_CHAT_MODEL    = os.environ.get("GROQ_CHAT_MODEL", "openai/gpt-oss-20b")  # 
 GROQ_WHISPER_MODEL = os.environ.get("GROQ_WHISPER_MODEL", "whisper-large-v3")  # המדויק יותר; אפשר להחליף ל-whisper-large-v3-turbo דרך משתנה סביבה
 MAX_TOOL_ROUNDS     = 2  # כמה פעמים Gemini רשאי לבקש חיפוש בוויקיפדיה בשיחה אחת
 ADMIN_HTML_FILE    = "admin.html"
+MAX_HISTORY_MESSAGES = 12   # כמה הודעות אחרונות נשלחות למודל (6 סבבי שאלה ותשובה), כדי שהשיחה לא תתארך ותאט
+MAX_SILENT_RETRIES   = 2    # כמה פעמים ברצף מבקשים מהמתקשר לחזור כששתק, לפני שנפרדים ומנתקים
+GEMINI_TIMEOUT_MS    = 10000  # זמן מקסימלי לבקשה אחת ל-Gemini, כדי שתקלה שלו לא תתלה את השיחה
+GEMINI_BUDGET_SEC    = 20     # אחרי כמה שניות מוותרים על שאר מפתחות Gemini ועוברים ל-Groq
 
 auth_codes     = {}
 active_sessions = {}
@@ -89,6 +93,13 @@ def init_db():
                 )
             ''')
             cur.execute('''
+                CREATE TABLE IF NOT EXISTS call_state (
+                    call_id TEXT PRIMARY KEY,
+                    silent INTEGER DEFAULT 0,
+                    ts TIMESTAMPTZ DEFAULT NOW()
+                )
+            ''')
+            cur.execute('''
                 CREATE TABLE IF NOT EXISTS call_log (
                     id SERIAL PRIMARY KEY,
                     ts TIMESTAMPTZ DEFAULT NOW(),
@@ -107,8 +118,9 @@ def get_chat_data(caller_id):
             with conn.cursor() as cur:
                 cur.execute("SELECT history, name FROM conversations WHERE caller_id=%s", (caller_id,))
                 row = cur.fetchone()
-                if row and row['history']:
-                    return json.loads(row['history']), row['name']
+                if row:
+                    history = json.loads(row['history']) if row['history'] else []
+                    return history, row['name']
     except Exception as e:
         log_event(caller_id, "db_get_error", error=str(e))
     return [], None
@@ -128,10 +140,11 @@ def save_chat_data(caller_id, history, name):
         log_event(caller_id, "db_save_error", error=str(e))
 
 def delete_chat_data(caller_id):
+    """מוחק את היסטוריית השיחה אבל משאיר את השם, כדי שבשיחה הבאה נועם יברך בשם."""
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM conversations WHERE caller_id=%s", (caller_id,))
+                cur.execute("UPDATE conversations SET history=NULL WHERE caller_id=%s", (caller_id,))
             conn.commit()
     except Exception as e:
         log_event(caller_id, "db_delete_error", error=str(e))
@@ -171,7 +184,81 @@ def log_call(caller_id, call_id):
     except:
         pass
 
+def call_already_greeted(call_id):
+    """האם כבר בירכנו בשיחה הזו. בקשה בלי הקלטה אחרי ברכה פירושה שהמתקשר שתק."""
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM call_log WHERE call_id=%s LIMIT 1", (call_id,))
+                return cur.fetchone() is not None
+    except Exception as e:
+        log_event(call_id, "db_greeted_check_error", error=str(e))
+        return False
+
+def bump_silence(call_id):
+    """סופר שתיקות ברצף בשיחה. אם ה-DB לא זמין מחזיר 1, כדי שלא ננתק בטעות."""
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM call_state WHERE ts < NOW() - INTERVAL '1 day'")
+                cur.execute('''
+                    INSERT INTO call_state (call_id, silent) VALUES (%s, 1)
+                    ON CONFLICT (call_id) DO UPDATE SET silent = call_state.silent + 1, ts = NOW()
+                    RETURNING silent
+                ''', (call_id,))
+                n = cur.fetchone()['silent']
+            conn.commit()
+            return n
+    except Exception as e:
+        log_event(call_id, "db_silence_error", error=str(e))
+        return 1
+
+def reset_silence(call_id):
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM call_state WHERE call_id=%s", (call_id,))
+            conn.commit()
+    except Exception:
+        pass
+
 # ── עזרים ───────────────────────────────────────────────────
+class CallError(Exception):
+    """שגיאה עם סוג, כדי שהמתקשר ישמע הודעה שמתאימה למה שקרה."""
+    def __init__(self, kind, detail=""):
+        super().__init__(detail or kind)
+        self.kind = kind
+
+ERROR_MESSAGES = {
+    "download":   "לא הצלחתי לקבל את ההקלטה אנא נסו שוב",
+    "busy":       "המערכת עמוסה כרגע אנא נסו שוב",
+    "connection": "החיבור לשרת נתקע אנא נסו שוב",
+    "generic":    "חלה שגיאה זמנית אנא נסו שוב",
+}
+
+def error_kind(e):
+    if isinstance(e, CallError):
+        return e.kind
+    err = str(e).lower()
+    if "exhausted" in err or "429" in err:
+        return "busy"
+    if "timeout" in err or "connection" in err:
+        return "connection"
+    return "generic"
+
+def hangup_response(text):
+    return Response(f"read=t-{clean_text(text)}=hangup", mimetype='text/plain')
+
+def record_response(text):
+    return Response(f"read=t-{clean_text(text)}={RECORD_COMMAND}", mimetype='text/plain')
+
+def trim_history(history):
+    """משאיר רק את ההודעות האחרונות, ומוודא שההיסטוריה מתחילה בהודעת משתמש."""
+    h = history[-MAX_HISTORY_MESSAGES:]
+    while h and h[0].get("role") != "user":
+        h = h[1:]
+    return h
+
 def clean_text(text):
     if not text: return ""
     text = re.sub(r'[\.\-\=&,\?!:;_\(\)\[\]\{\}\"\']', ' ', text)
@@ -210,6 +297,14 @@ def perform_wikipedia_search(call_id, query):
 def wikipedia_search(query: str) -> str:
     """Search Wikipedia to get accurate information about terms, people or events."""
     return query
+
+def remember_name(name: str) -> str:
+    """Save the caller's first name, only when the caller clearly says their own name."""
+    return name
+
+def end_call() -> str:
+    """Call this when the caller says goodbye or thanks and has nothing more to ask. After it returns, say a very short goodbye."""
+    return "ok"
 
 AUDIO_WORDS  = ("שמע", "אודיו", "הקלט", "audio")
 REFUSE_WORDS = ("לא יכול", "לא מסוגל", "אינני יכול", "אינני מסוגל", "אין לי יכולת", "מצטער", "cannot", "can't")
@@ -447,6 +542,14 @@ def admin_stats():
 # נתיב ראשי — שיחות
 # ══════════════════════════════════════════════════════════════
 
+def silence_response(call_id):
+    """המתקשר שתק: מבקשים שיחזור, ואחרי כמה שתיקות ברצף נפרדים ומנתקים."""
+    n = bump_silence(call_id)
+    log_event(call_id, "caller_silent", count=n)
+    if n > MAX_SILENT_RETRIES:
+        return hangup_response("לא שמעתי אתכם תתקשרו שוב בכל עת להתראות")
+    return record_response("לא שמעתי אתכם אנא דברו לאחר הצליל")
+
 @app.route('/ai-chat', methods=['GET', 'POST'])
 def ai_chat():
     caller_id = request.values.get('ApiPhone', 'unknown')
@@ -456,43 +559,69 @@ def ai_chat():
 
     if not is_allowed(caller_id):
         log_event(call_id, "unauthorized_caller", caller_id=caller_id)
-        return Response("read=t-מצטערים השירות אינו זמין עבורך=hangup", mimetype='text/plain')
+        return hangup_response("מצטערים השירות אינו זמין עבורך לקבלת גישה אנא פנו למנהל השירות")
 
     history, known_name = get_chat_data(caller_id)
 
     if request.values.get('hangup') == 'yes':
         log_event(call_id, "hangup_received")
         delete_chat_data(caller_id)
+        executor.submit(reset_silence, call_id)
         return Response("noop", mimetype='text/plain')
 
     audio_path = request.values.getlist('user_audio')
     if not audio_path:
+        if call_already_greeted(call_id):
+            return silence_response(call_id)
         log_event(call_id, "first_greeting_prompt")
         log_call(caller_id, call_id)
-        return Response(f"read=t-שלום כאן נועם אנא דברו לאחר הצליל={RECORD_COMMAND}", mimetype='text/plain')
+        if known_name:
+            return record_response(f"שלום {known_name} כאן נועם אנא דברו לאחר הצליל")
+        return record_response("שלום כאן נועם איך קוראים לכם ובמה אפשר לעזור אנא דברו לאחר הצליל")
 
     try:
-        audio_res = session.get("https://www.call2all.co.il/ym/api/DownloadFile",
-                                params={"token": YEMOT_TOKEN, "path": f"ivr2:{audio_path[-1]}"},
-                                timeout=20)
-        audio_res.raise_for_status()
+        try:
+            audio_res = session.get("https://www.call2all.co.il/ym/api/DownloadFile",
+                                    params={"token": YEMOT_TOKEN, "path": f"ivr2:{audio_path[-1]}"},
+                                    timeout=20)
+            audio_res.raise_for_status()
+        except requests.RequestException as dl_err:
+            raise CallError("download", str(dl_err))
 
         content_type = audio_res.headers.get('Content-Type', '').lower()
-        if 'text' in content_type or 'html' in content_type or len(audio_res.content) < 1000:
-            raise Exception("Downloaded file is corrupted or too small")
+        if 'text' in content_type or 'html' in content_type:
+            raise CallError("download", "Downloaded file is not audio")
+        if len(audio_res.content) < 1000:
+            log_event(call_id, "audio_too_short", size=len(audio_res.content))
+            return silence_response(call_id)
+        executor.submit(reset_silence, call_id)
 
+        if known_name:
+            name_rule = f"The caller's name is {known_name}. Use it only now and then, naturally. "
+        else:
+            name_rule = ("The caller's name is not known yet. If the caller says their own name, "
+                         "call the remember_name tool once and greet them warmly by name. "
+                         "Never ask for the name again after the first question. ")
         system_prompt = (
-            "You are Noam, a helpful and friendly voice assistant on a phone call. "
+            "You are Noam, a helpful, polite and friendly voice assistant on a phone call. "
             "The user speaks Hebrew. Their message arrives either as a voice recording or as its transcript. "
             "You CAN understand spoken audio. Never say that you cannot process audio or audio files. "
+            + name_rule +
             "CRITICAL RULE: Keep your answers VERY SHORT, concise, and conversational. "
             "Respond in 1 to 3 short sentences MAXIMUM per answer. "
+            "Only when the caller explicitly asks you to elaborate, explain more or give details, "
+            "you may answer in up to 6 short sentences. "
+            "If the recording is silent, unclear or you did not understand it, ask briefly to repeat. Never guess what was said. "
             "When asked about a person, place, event or any fact you are not completely sure about, "
             "call the wikipedia_search tool first and answer from its result. "
+            "If nothing is found, say briefly that you do not know. Never invent facts. "
             "Never promise to get back to the user later and never say that you are still searching. "
             "Answer in this same reply, or say briefly that you do not know. "
+            "When the caller says goodbye or thanks and asks for nothing more, call the end_call tool, "
+            "then reply with a very short warm goodbye. "
             "FORMAT RULE: Do NOT use any punctuation marks whatsoever. "
-            "Use only clear Hebrew letters and spaces. Never output English or internal thoughts."
+            "Write numbers as Hebrew words, not digits. "
+            "Use only clear Hebrew letters and spaces. Never output English, emoji or internal thoughts."
         )
 
         # Gemini שומע את ההקלטה עצמה. Whisper רץ במקביל, בלי לעכב, ומשמש רק כגיבוי
@@ -505,7 +634,7 @@ def ai_chat():
             except Exception:
                 return ""
 
-        history = drop_refusals_from_history(history)
+        history = trim_history(drop_refusals_from_history(history))
         history_contents = [types.Content(role='user' if h['role'] == 'user' else 'model',
                                           parts=[types.Part(text=h['content'])]) for h in history]
         AUDIO_INSTRUCTION = "הקשב להקלטה המצורפת וענה למשתמש בעברית תשובה קצרה מאוד של עד שלושה משפטים וללא סימני פיסוק כלל."
@@ -526,11 +655,18 @@ def ai_chat():
 
         attempts = list(enumerate(gemini_keys))
         attempt_no = 0
+        gemini_started = time.time()
+        ending = False
         while attempt_no < len(attempts):
+            if time.time() - gemini_started > GEMINI_BUDGET_SEC:
+                log_event(call_id, "gemini_budget_exceeded", seconds=round(time.time() - gemini_started, 1))
+                break
             idx, current_key = attempts[attempt_no]
             attempt_no += 1
+            ending = False
             try:
-                local_client = genai.Client(api_key=current_key)
+                local_client = genai.Client(api_key=current_key,
+                                            http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS))
                 key_contents = build_contents(send_audio)  # רשימה חדשה לכל ניסיון, כדי שכשל לא ילכלך את הבא
                 log_event(call_id, "gemini_attempt", key=idx + 1, mode="audio" if send_audio else "text")
                 response = None
@@ -539,7 +675,7 @@ def ai_chat():
                     allow_tools = round_no < MAX_TOOL_ROUNDS
                     config = types.GenerateContentConfig(
                         system_instruction=system_prompt,
-                        tools=[wikipedia_search],
+                        tools=[wikipedia_search, remember_name, end_call],
                         # בלי זה ה-SDK מריץ את wikipedia_search בעצמו (שרק מחזירה את השאלה) ומדלג על החיפוש האמיתי
                         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
                         # בסבב האחרון אוסרים קריאה לכלים, כדי שנקבל תשובת טקסט
@@ -556,7 +692,20 @@ def ai_chat():
                     key_contents.append(response.candidates[0].content)
                     parts = []
                     for call in response.function_calls:
-                        res = perform_wikipedia_search(call_id, (call.args or {}).get("query", ""))
+                        args = call.args or {}
+                        if call.name == "wikipedia_search":
+                            res = perform_wikipedia_search(call_id, args.get("query", ""))
+                        elif call.name == "remember_name":
+                            new_name = clean_text(str(args.get("name", "")))[:30]
+                            if new_name:
+                                known_name = new_name
+                            log_event(call_id, "name_remembered", name=new_name)
+                            res = "saved"
+                        elif call.name == "end_call":
+                            ending = True
+                            res = "ok now say a very short goodbye"
+                        else:
+                            res = "unknown tool"
                         parts.append(types.Part.from_function_response(
                             name=call.name, response={"result": res}
                         ))
@@ -623,21 +772,18 @@ def ai_chat():
         log_event(call_id, "bot_reply", text=ai_reply)
         history.extend([{"role": "user", "content": user_content_for_history},
                          {"role": "assistant", "content": ai_reply}])
+        if ending:
+            save_chat_data(caller_id, [], known_name)  # מנקה היסטוריה, שומר שם
+            log_event(call_id, "call_ended_by_assistant")
+            return hangup_response(ai_reply)
         save_chat_data(caller_id, history, known_name)
-        return Response(f"read=t-{ai_reply}={RECORD_COMMAND}", mimetype='text/plain')
+        return record_response(ai_reply)
 
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
         log_event(call_id, "global_exception", error=str(e))
-        err = str(e).lower()
-        if "exhausted" in err or "429" in err:
-            msg = "המערכת עמוסה כרגע אנא נסו שוב"
-        elif "timeout" in err or "connection" in err:
-            msg = "החיבור לשרת נתקע אנא נסו שוב"
-        else:
-            msg = "חלה שגיאה זמנית אנא נסו שוב"
         # חשוב: ממשיכים לפקודת ההקלטה, אחרת ימות המשיח מנתקים את השיחה אחרי ההודעה
-        return Response(f"read=t-{clean_text(msg)}={RECORD_COMMAND}", mimetype='text/plain')
+        return record_response(ERROR_MESSAGES[error_kind(e)])
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
