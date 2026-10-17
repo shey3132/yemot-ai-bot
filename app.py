@@ -348,6 +348,23 @@ def clean_transcript(text):
             out.append(words[i]); i += 1
     return " ".join(out).strip()
 
+def audio_stats(call_id, wav_bytes):
+    """רושם ללוג מאפייני הקלטה (פורמט, אורך, עוצמה). לאבחון בלבד, לא משנה התנהגות ולא זורק שגיאה."""
+    try:
+        import io, wave, array
+        with wave.open(io.BytesIO(wav_bytes)) as w:
+            ch, width, rate, frames = w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()
+            raw = w.readframes(frames)
+        info = {"channels": ch, "bits": width * 8, "rate": rate, "seconds": round(frames / rate, 2) if rate else None}
+        if width == 2 and raw:
+            a = array.array("h"); a.frombytes(raw[: len(raw) // 2 * 2])
+            peak = max(max(a), -min(a))
+            rms = (sum(x * x for x in a) / len(a)) ** 0.5
+            info.update(peak=peak, rms=round(rms), peak_pct=round(peak / 327.67, 1))
+        log_event(call_id, "audio_stats", **info)
+    except Exception as e:
+        log_event(call_id, "audio_stats_error", error=str(e), size=len(wav_bytes), header=wav_bytes[:4].hex())
+
 def transcribe_audio(call_id, audio_bytes):
     """תמלול עברית דרך Groq Whisper. מחזיר מחרוזת ריקה אם נכשל — לא זורק שגיאה."""
     if not GROQ_API_KEY:
@@ -595,6 +612,7 @@ def ai_chat():
             log_event(call_id, "audio_too_short", size=len(audio_res.content))
             return silence_response(call_id)
         executor.submit(reset_silence, call_id)
+        audio_stats(call_id, audio_res.content)
 
         if known_name:
             name_rule = f"The caller's name is {known_name}. Use it only now and then, naturally. "
