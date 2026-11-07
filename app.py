@@ -36,7 +36,8 @@ DATABASE_URL       = os.environ.get("DATABASE_URL")
 MODEL_NAME         = "gemini-2.5-flash"
 GROQ_CHAT_MODEL    = os.environ.get("GROQ_CHAT_MODEL", "openai/gpt-oss-20b")  # llama-3.1-8b-instant הושבת ב-Groq ב-16.8.2026
 GROQ_WHISPER_MODEL = os.environ.get("GROQ_WHISPER_MODEL", "whisper-large-v3")  # המדויק יותר; אפשר להחליף ל-whisper-large-v3-turbo דרך משתנה סביבה
-MAX_TOOL_ROUNDS     = 2  # כמה פעמים Gemini רשאי לבקש חיפוש בוויקיפדיה בשיחה אחת
+MAX_TOOL_ROUNDS     = 3  # כמה פעמים Gemini רשאי להפעיל כלים (ויקיפדיה, חיפוש ברשת וכו') בתשובה אחת
+WEB_SEARCH_TIMEOUT_MS = 8000  # זמן מקסימלי לחיפוש ברשת
 ADMIN_HTML_FILE    = "admin.html"
 MAX_HISTORY_MESSAGES = 12   # כמה הודעות אחרונות נשלחות למודל (6 סבבי שאלה ותשובה), כדי שהשיחה לא תתארך ותאט
 MAX_SILENT_RETRIES   = 2    # כמה פעמים ברצף מבקשים מהמתקשר לחזור כששתק, לפני שנפרדים ומנתקים
@@ -298,6 +299,34 @@ def wikipedia_search(query: str) -> str:
     """Search Wikipedia to get accurate information about terms, people or events."""
     return query
 
+def web_search(query: str) -> str:
+    """Search the web for current or local facts that Wikipedia does not cover, such as businesses, halls, addresses, opening hours, prices or news."""
+    return query
+
+def perform_web_search(call_id, query, api_key):
+    """חיפוש ברשת דרך Gemini עם Google Search. מחזיר טקסט קצר, ואף פעם לא זורק שגיאה."""
+    query = re.sub(r'[^\u0590-\u05FFa-zA-Z0-9\s]', ' ', query).strip()[:200]
+    log_event(call_id, "web_search", query=query)
+    if not query: return "לא צוין מושג תקין לחיפוש"
+    cache_key = "web:" + query
+    cached = search_cache.get(cache_key)
+    if cached and time.time() - cached['time'] < 3600:
+        return cached['result']
+    try:
+        client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=WEB_SEARCH_TIMEOUT_MS))
+        resp = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=(f"{query}\n\nענה בעברית בשניים עד שלושה משפטים קצרים, עובדות בלבד, בלי קישורים. "
+                      "אם לא נמצא מידע מהימן, ענה רק: לא נמצא מידע."),
+            config=types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())]),
+        )
+        result = clean_text((resp.text or "")[:600]) or "לא נמצא מידע"
+        search_cache[cache_key] = {'result': result, 'time': time.time()}
+        return result
+    except Exception as e:
+        log_event(call_id, "web_search_error", error=str(e))
+        return "תקלה בחיפוש ברשת"
+
 def remember_name(name: str) -> str:
     """Save the caller's first name, only when the caller clearly says their own name."""
     return name
@@ -348,6 +377,8 @@ def clean_transcript(text):
             out.append(words[i]); i += 1
     return " ".join(out).strip()
 
+WHISPER_HALLUCINATIONS = ("תודה על הצפייה", "תרגום כתוביות", "כתוביות")  # משפטים ש-Whisper ממציא כשהוא מקבל שקט
+
 def transcribe_audio(call_id, audio_bytes):
     """תמלול עברית דרך Groq Whisper. מחזיר מחרוזת ריקה אם נכשל — לא זורק שגיאה."""
     if not GROQ_API_KEY:
@@ -361,7 +392,11 @@ def transcribe_audio(call_id, audio_bytes):
             timeout=8
         )
         r.raise_for_status()
-        return clean_transcript(r.json().get("text") or "")
+        text = clean_transcript(r.json().get("text") or "")
+        if any(h in text for h in WHISPER_HALLUCINATIONS):
+            log_event(call_id, "whisper_hallucination_dropped", text=text)
+            return ""
+        return text
     except Exception as e:
         log_event(call_id, "transcribe_error", error=str(e))
         return ""
@@ -603,7 +638,8 @@ def ai_chat():
                          "call the remember_name tool once and greet them warmly by name. "
                          "Never ask for the name again after the first question. ")
         system_prompt = (
-            "You are Noam, a helpful, polite and friendly voice assistant on a phone call. "
+            "You are Noam, a helpful, polite and friendly MALE voice assistant on a phone call. "
+            "Always speak Hebrew in the masculine form about yourself, for example אני מכיר and אני מצטער. "
             "The user speaks Hebrew. Their message arrives either as a voice recording or as its transcript. "
             "You CAN understand spoken audio. Never say that you cannot process audio or audio files. "
             + name_rule +
@@ -612,8 +648,11 @@ def ai_chat():
             "Only when the caller explicitly asks you to elaborate, explain more or give details, "
             "you may answer in up to 6 short sentences. "
             "If the recording is silent, unclear or you did not understand it, ask briefly to repeat. Never guess what was said. "
-            "When asked about a person, place, event or any fact you are not completely sure about, "
-            "call the wikipedia_search tool first and answer from its result. "
+            "Answer general knowledge questions, explanations, advice and conversation directly from your own knowledge. "
+            "Use tools only for specific facts about a particular person, place or event that you do not know. "
+            "For those, call the wikipedia_search tool first and answer from its result. "
+            "If Wikipedia finds nothing, or the question is about a local place, business, hall, address, "
+            "opening hours, price or recent news, call the web_search tool and answer from its result. "
             "If nothing is found, say briefly that you do not know. Never invent facts. "
             "Never promise to get back to the user later and never say that you are still searching. "
             "Answer in this same reply, or say briefly that you do not know. "
@@ -675,7 +714,7 @@ def ai_chat():
                     allow_tools = round_no < MAX_TOOL_ROUNDS
                     config = types.GenerateContentConfig(
                         system_instruction=system_prompt,
-                        tools=[wikipedia_search, remember_name, end_call],
+                        tools=[wikipedia_search, web_search, remember_name, end_call],
                         # בלי זה ה-SDK מריץ את wikipedia_search בעצמו (שרק מחזירה את השאלה) ומדלג על החיפוש האמיתי
                         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
                         # בסבב האחרון אוסרים קריאה לכלים, כדי שנקבל תשובת טקסט
@@ -695,6 +734,8 @@ def ai_chat():
                         args = call.args or {}
                         if call.name == "wikipedia_search":
                             res = perform_wikipedia_search(call_id, args.get("query", ""))
+                        elif call.name == "web_search":
+                            res = perform_web_search(call_id, str(args.get("query", "")), current_key)
                         elif call.name == "remember_name":
                             new_name = clean_text(str(args.get("name", "")))[:30]
                             if new_name:
