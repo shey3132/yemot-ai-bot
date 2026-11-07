@@ -317,7 +317,6 @@ def perform_web_search(call_id, query, api_key):
         resp = client.models.generate_content(
             model=MODEL_NAME,
             contents=(f"{query}\n\nענה בעברית בשניים עד שלושה משפטים קצרים, עובדות בלבד, בלי קישורים. "
-                      "אם הנושא הוא רכילות, תוכן בוטה או בידור חילוני, ענה רק: אין מידע בנושא זה. "
                       "אם לא נמצא מידע מהימן, ענה רק: לא נמצא מידע."),
             config=types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())]),
         )
@@ -653,8 +652,6 @@ def ai_chat():
             "call the wikipedia_search tool first and answer from its result. "
             "If Wikipedia finds nothing, or the question is about a local place, business, hall, address, "
             "opening hours, price or recent news, call the web_search tool and answer from its result. "
-            "Never search for or discuss celebrity gossip, adult content, secular entertainment or other religions. "
-            "Politely say you cannot help with that and offer to help with something else. "
             "If nothing is found, say briefly that you do not know. Never invent facts. "
             "Never promise to get back to the user later and never say that you are still searching. "
             "Answer in this same reply, or say briefly that you do not know. "
