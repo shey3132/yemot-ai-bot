@@ -41,6 +41,7 @@ WEB_SEARCH_TIMEOUT_MS = 8000  # זמן מקסימלי לחיפוש ברשת
 ADMIN_HTML_FILE    = "admin.html"
 MAX_HISTORY_MESSAGES = 12   # כמה הודעות אחרונות נשלחות למודל (6 סבבי שאלה ותשובה), כדי שהשיחה לא תתארך ותאט
 MAX_SILENT_RETRIES   = 2    # כמה פעמים ברצף מבקשים מהמתקשר לחזור כששתק, לפני שנפרדים ומנתקים
+GEMINI_API_VERSION   = "v1beta"  # גרסאות חדשות של ה-SDK ברירת המחדל שלהן v1, שאינה תומכת בכלים (function calling)
 GEMINI_TIMEOUT_MS    = 10000  # זמן מקסימלי לבקשה אחת ל-Gemini, כדי שתקלה שלו לא תתלה את השיחה
 GEMINI_BUDGET_SEC    = 20     # אחרי כמה שניות מוותרים על שאר מפתחות Gemini ועוברים ל-Groq
 
@@ -313,7 +314,7 @@ def perform_web_search(call_id, query, api_key):
     if cached and time.time() - cached['time'] < 3600:
         return cached['result']
     try:
-        client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=WEB_SEARCH_TIMEOUT_MS))
+        client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=WEB_SEARCH_TIMEOUT_MS, api_version=GEMINI_API_VERSION))
         resp = client.models.generate_content(
             model=MODEL_NAME,
             contents=(f"{query}\n\nענה בעברית בשניים עד שלושה משפטים קצרים, עובדות בלבד, בלי קישורים. "
@@ -631,36 +632,42 @@ def ai_chat():
             return silence_response(call_id)
         executor.submit(reset_silence, call_id)
 
-        if known_name:
-            name_rule = f"The caller's name is {known_name}. Use it only now and then, naturally. "
-        else:
-            name_rule = ("The caller's name is not known yet. If the caller says their own name, "
-                         "call the remember_name tool once and greet them warmly by name. "
-                         "Never ask for the name again after the first question. ")
-        system_prompt = (
+        base_prompt = (
             "You are Noam, a helpful, polite and friendly MALE voice assistant on a phone call. "
             "Always speak Hebrew in the masculine form about yourself, for example אני מכיר and אני מצטער. "
             "The user speaks Hebrew. Their message arrives either as a voice recording or as its transcript. "
             "You CAN understand spoken audio. Never say that you cannot process audio or audio files. "
-            + name_rule +
             "CRITICAL RULE: Keep your answers VERY SHORT, concise, and conversational. "
             "Respond in 1 to 3 short sentences MAXIMUM per answer. "
             "Only when the caller explicitly asks you to elaborate, explain more or give details, "
             "you may answer in up to 6 short sentences. "
             "If the recording is silent, unclear or you did not understand it, ask briefly to repeat. Never guess what was said. "
             "Answer general knowledge questions, explanations, advice and conversation directly from your own knowledge. "
+            "Never promise to get back to the user later and never say that you are still searching. "
+            "Answer in this same reply, or say briefly that you do not know. Never invent facts. "
+            "FORMAT RULE: Do NOT use any punctuation marks whatsoever. "
+            "Write numbers as Hebrew words, not digits. "
+            "Use only clear Hebrew letters and spaces. Never output English, emoji or internal thoughts. "
+        )
+        if known_name:
+            name_rule = f"The caller's name is {known_name}. Use it only now and then, naturally. "
+        else:
+            name_rule = ("The caller's name is not known yet. If the caller says their own name, "
+                         "call the remember_name tool once and greet them warmly by name. "
+                         "Never ask for the name again after the first question. ")
+        # הוראות הכלים רק ל-Gemini. מודל Groq מקבל פרומפט בלי כלים, אחרת הוא מנסה לקרוא להם ונכשל.
+        system_prompt = base_prompt + name_rule + (
             "Use tools only for specific facts about a particular person, place or event that you do not know. "
             "For those, call the wikipedia_search tool first and answer from its result. "
             "If Wikipedia finds nothing, or the question is about a local place, business, hall, address, "
             "opening hours, price or recent news, call the web_search tool and answer from its result. "
-            "If nothing is found, say briefly that you do not know. Never invent facts. "
-            "Never promise to get back to the user later and never say that you are still searching. "
-            "Answer in this same reply, or say briefly that you do not know. "
+            "If nothing is found, say briefly that you do not know. "
             "When the caller says goodbye or thanks and asks for nothing more, call the end_call tool, "
-            "then reply with a very short warm goodbye. "
-            "FORMAT RULE: Do NOT use any punctuation marks whatsoever. "
-            "Write numbers as Hebrew words, not digits. "
-            "Use only clear Hebrew letters and spaces. Never output English, emoji or internal thoughts."
+            "then reply with a very short warm goodbye."
+        )
+        groq_prompt = base_prompt + (
+            "You have no tools and no internet access. Never try to call a tool or function. "
+            "If you do not know something, say briefly that you do not know."
         )
 
         # Gemini שומע את ההקלטה עצמה. Whisper רץ במקביל, בלי לעכב, ומשמש רק כגיבוי
@@ -705,7 +712,7 @@ def ai_chat():
             ending = False
             try:
                 local_client = genai.Client(api_key=current_key,
-                                            http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS))
+                                            http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS, api_version=GEMINI_API_VERSION))
                 key_contents = build_contents(send_audio)  # רשימה חדשה לכל ניסיון, כדי שכשל לא ילכלך את הבא
                 log_event(call_id, "gemini_attempt", key=idx + 1, mode="audio" if send_audio else "text")
                 response = None
@@ -785,7 +792,7 @@ def ai_chat():
                         "https://api.groq.com/openai/v1/chat/completions",
                         headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
                         json={"model": GROQ_CHAT_MODEL, "messages": [
-                            {"role": "system", "content": system_prompt},
+                            {"role": "system", "content": groq_prompt},
                             *[{"role": h['role'], "content": h['content']} for h in history],
                             {"role": "user", "content": user_transcription}
                         ]},
